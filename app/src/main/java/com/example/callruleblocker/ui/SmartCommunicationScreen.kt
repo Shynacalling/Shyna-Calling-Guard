@@ -133,20 +133,29 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         if (firebaseUid != null) {
             val userRef = db.collection("users").document(firebaseUid!!)
             val currentEmail = auth.currentUser?.email?.lowercase() ?: ""
+            
             userRef.get().addOnSuccessListener { doc ->
+                val existingName = doc.getString("name")
+                val safeName = if (existingName == null || existingName == "null" || existingName.isBlank()) {
+                    currentEmail.substringBefore("@")
+                } else existingName
+
                 val syncData = hashMapOf(
                     "uid" to firebaseUid,
                     "email" to currentEmail,
-                    "name" to (doc.getString("name") ?: currentEmail.substringBefore("@")),
+                    "name" to safeName,
                     "isOnline" to true,
                     "lastSeen" to com.google.firebase.Timestamp.now()
                 )
                 userRef.set(syncData, com.google.firebase.firestore.SetOptions.merge())
+                    .addOnSuccessListener {
+                        // Toast.makeText(context, "Profile Synced", Toast.LENGTH_SHORT).show()
+                    }
             }
         }
     }
 
-    // FETCH ALL REGISTERED USERS (Robust Strategy for Small Datasets)
+    // FETCH REAL USERS & PRESENCE (100% Logic)
     var allRealUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
@@ -155,38 +164,31 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
             // 1. Sync self presence
             userRef.update("isOnline", true, "lastSeen", com.google.firebase.Timestamp.now())
                 .addOnFailureListener {
-                    // If update fails, document might not exist, try set
-                    val currentEmail = auth.currentUser?.email?.lowercase() ?: ""
-                    val syncData = hashMapOf(
-                        "uid" to firebaseUid,
-                        "email" to currentEmail,
-                        "name" to currentEmail.substringBefore("@"),
-                        "isOnline" to true,
-                        "lastSeen" to com.google.firebase.Timestamp.now()
-                    )
-                    userRef.set(syncData, com.google.firebase.firestore.SetOptions.merge())
+                    // If update fails, document might not exist, ensure sync runs
                 }
 
             // 2. Listen to ALL users for instant discovery
             val listener = db.collection("users")
-                .limit(50) // Fetch top 50 users (enough for this app)
+                .limit(50) 
                 .addSnapshotListener { snapshots, error ->
                 if (error != null) {
-                    if (error.message?.contains("permission", true) == true) {
-                        Toast.makeText(context, "Search restricted: Check Firestore Rules.", Toast.LENGTH_SHORT).show()
-                    }
+                    Toast.makeText(context, "DB Error: ${error.message}", Toast.LENGTH_LONG).show()
                     return@addSnapshotListener
                 }
                 
                 val users = snapshots?.documents?.mapNotNull { doc ->
                     val uid = doc.id
-                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
+                    val rawName = doc.getString("name") ?: doc.getString("displayName")
                     val email = doc.getString("email") ?: ""
+                    
+                    val name = if (rawName == null || rawName == "null" || rawName.isBlank()) {
+                        email.substringBefore("@").ifBlank { "User" }
+                    } else rawName
+
                     val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
                     val customUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
                     
-                    // We load everyone, filter self in the UI logic
                     RealUser(uid, name, email, phone, online, customUid)
                 } ?: emptyList()
                 
