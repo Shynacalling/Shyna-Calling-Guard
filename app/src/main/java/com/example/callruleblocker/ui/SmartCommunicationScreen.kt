@@ -359,6 +359,10 @@ private fun CallsPage(
                     }, modifier = Modifier.fillMaxWidth()) { Text("Save Configuration") }
                     
                     if (context is com.example.callruleblocker.MainActivity) {
+                        var email by remember { mutableStateOf("") }
+                        var password by remember { mutableStateOf("") }
+                        var isSignUp by remember { mutableStateOf(false) }
+                        
                         val currentUser = context.firebaseUser
                         if (currentUser != null) {
                             Text("Logged in as: ${currentUser.email}", style = MaterialTheme.typography.labelLarge, color = LinkGreen)
@@ -373,22 +377,56 @@ private fun CallsPage(
                                 Text("Logout")
                             }
                         } else {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(
-                                    onClick = { context.registerUser("user@gmail.com", "Password123") },
-                                    modifier = Modifier.weight(1f)
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = email,
+                                    onValueChange = { email = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Email Address") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email)
+                                )
+                                OutlinedTextField(
+                                    value = password,
+                                    onValueChange = { password = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Password") },
+                                    singleLine = true,
+                                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                                )
+                                
+                                Button(
+                                    onClick = { 
+                                        if (isSignUp) context.registerUser(email, password)
+                                        else context.loginUser(email, password)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = LinkGreen, contentColor = Color.Black)
                                 ) {
-                                    Icon(Icons.Outlined.PersonAdd, null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Signup", maxLines = 1)
+                                    Text(if (isSignUp) "Create Account" else "Login to Shyna Link")
                                 }
-                                TextButton(
-                                    onClick = { context.loginUser("user@gmail.com", "Password123") },
-                                    modifier = Modifier.weight(1f)
+                                
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.AutoMirrored.Outlined.Login, null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Login", maxLines = 1)
+                                    TextButton(onClick = { isSignUp = !isSignUp }) {
+                                        Text(if (isSignUp) "Already have an account? Login" else "New here? Sign Up", color = LinkCyan)
+                                    }
+                                    if (!isSignUp) {
+                                        TextButton(onClick = { 
+                                            if (email.isNotBlank()) {
+                                                com.google.firebase.auth.FirebaseAuth.getInstance().sendPasswordResetEmail(email)
+                                                    .addOnSuccessListener { Toast.makeText(context, "Reset email sent", Toast.LENGTH_SHORT).show() }
+                                            } else {
+                                                Toast.makeText(context, "Enter email first", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }) {
+                                            Text("Forgot Password?", color = LinkMuted)
+                                        }
+                                    }
                                 }
                             }
                         }
