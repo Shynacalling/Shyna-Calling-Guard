@@ -1,5 +1,7 @@
 package com.example.callruleblocker.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -137,6 +139,12 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     }
     val markerState = rememberMarkerState(position = LatLng(26.8242, 75.6963))
 
+    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            // Permission granted
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).addOnSuccessListener { location ->
@@ -146,6 +154,8 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                     markerState.position = latLng
                 }
             }
+        } else {
+            locationPermissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
         }
     }
 
@@ -261,7 +271,11 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                                 icon = Icons.Outlined.MyLocation,
                                 iconBg = Color.Black,
                                 iconTint = Color(0xFF00E676),
-                                border = true
+                                border = true,
+                                onClick = {
+                                    onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
+                                    onBack()
+                                }
                             )
                         }
 

@@ -666,7 +666,7 @@ private fun MoreMenuButton(
                 onClick = { onMenuExpandedChange(false); onOpenOfflineCall() }
             )
             DropdownMenuItem(
-                text = { Text("Shyna Link", color = Color.White) },
+                text = { Text("Shyna Pro Link", color = Color.White) },
                 leadingIcon = { Icon(Icons.Outlined.Hub, null, tint = Color(0xFF2979FF)) },
                 onClick = { onMenuExpandedChange(false); onOpenOnlineCall() }
             )

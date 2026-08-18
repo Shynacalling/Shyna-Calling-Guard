@@ -21,9 +21,18 @@ class AudioRecorder(private val context: Context) {
     }
 
     fun stop() {
-        recorder?.stop()
-        recorder?.release()
-        recorder = null
+        try {
+            recorder?.stop()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            recorder?.release()
+            recorder = null
+        }
+    }
+
+    fun getAmplitude(): Int {
+        return recorder?.maxAmplitude ?: 0
     }
 
     private fun createRecorder(): MediaRecorder {

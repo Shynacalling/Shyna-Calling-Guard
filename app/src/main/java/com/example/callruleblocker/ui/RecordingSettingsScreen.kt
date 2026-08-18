@@ -376,7 +376,7 @@ fun RecordingSettingsScreen(
 
                 item {
                     SettingsCard {
-                        SettingsRow(Icons.Outlined.Info, "About Shyna Caller Guard", "Version 4.7 · Premium Customization Suite") { }
+                        SettingsRow(Icons.Outlined.Info, "About Shyna Caller Guard Pro", "Version 4.14.6 · Final Pro Suite") { }
                     }
                 }
             }

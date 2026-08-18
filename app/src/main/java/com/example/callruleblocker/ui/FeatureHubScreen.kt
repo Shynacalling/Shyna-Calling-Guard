@@ -345,16 +345,16 @@ private fun advancedSections(): List<AdvancedSection> = listOf(
     AdvancedSection("calls", "Call Management", "screening, rules and dual-SIM", Icons.Outlined.Call, listOf(
         f("ai_spam", "AI spam detection", "Local risk flags with caller-ID provider support", Icons.Outlined.Security, true, options = listOf("Warn only", "Auto block high risk", "Community report")),
         f("risk_score", "Unknown number risk score", "Shows low, medium or high risk before answering", Icons.Outlined.GppMaybe, true),
-        f("geo_block", "Country / state wise blocking", "Create geographic and prefix-based blocking rules", Icons.Outlined.Public, route = FeatureRoute.RULES, options = listOf("International", "State prefixes", "Except contacts")),
+        f("geo_block", "Country / state wise blocking", "Create geographic and prefix-based blocking rules", Icons.Outlined.Public, true, route = FeatureRoute.RULES, options = listOf("International", "State prefixes", "Except contacts")),
         f("time_block", "Time based blocking", "Office hours, night mode and custom schedules", Icons.Outlined.Schedule, true, route = FeatureRoute.RULES, options = listOf("Office hours", "Night mode", "Weekend")),
-        f("silent_unknown", "Auto silent unknown calls", "Silence callers not saved in contacts", Icons.Outlined.VolumeOff),
+        f("silent_unknown", "Auto silent unknown calls", "Silence callers not saved in contacts", Icons.Outlined.VolumeOff, true),
         f("vip", "VIP contact mode", "Always ring selected family or priority contacts", Icons.Outlined.Star, true, options = listOf("Bypass DND", "Loud ringtone", "Repeat alert")),
         f("repeat", "Repeat caller rule", "Allow after 3 calls within 5 minutes", Icons.Outlined.Repeat, true),
         f("hidden", "Hidden / private number block", "Reject calls without caller number", Icons.Outlined.VisibilityOff, true, route = FeatureRoute.RULES),
-        f("series", "Number series blocking", "Block prefixes such as +91 98765*****", Icons.Outlined.FilterAlt, route = FeatureRoute.RULES),
+        f("series", "Number series blocking", "Block prefixes such as +91 98765*****", Icons.Outlined.FilterAlt, true, route = FeatureRoute.RULES),
         f("dual_sim_rules", "Dual SIM independent rules", "Separate SIM 1, SIM 2 and eSIM behavior", Icons.Filled.SimCard, true, route = FeatureRoute.SIM, options = listOf("SIM 1 rules", "SIM 2 rules", "Remember last SIM")),
         f("greylist", "Whitelist + blacklist + greylist", "Allow, block or screen uncertain callers", Icons.Outlined.Rule, true, route = FeatureRoute.RULES),
-        f("call_screen", "Pixel-style call screening", "Screen unknown calls when platform support is available", Icons.Outlined.PhoneInTalk),
+        f("call_screen", "Pixel-style call screening", "Screen unknown calls when platform support is available", Icons.Outlined.PhoneInTalk, true),
         f("floating", "Floating caller window", "Compact caller overlay while using other apps", Icons.Outlined.PictureInPictureAlt, true, route = FeatureRoute.SETTINGS),
         f("reason", "Call reason popup", "Mark calls as spam, bank, delivery or family", Icons.Outlined.Label, true),
         f("block_report", "One-tap Block & Report", "Block locally and prepare a spam report", Icons.Outlined.Report, true, route = FeatureRoute.RULES)
@@ -362,35 +362,35 @@ private fun advancedSections(): List<AdvancedSection> = listOf(
 
     AdvancedSection("video", "Video Caller ID", "full-screen identity and offline media", Icons.Outlined.Videocam, listOf(
         f("video_full", "Full-screen video caller", "Play a selected video on incoming calls", Icons.Outlined.Fullscreen, true, route = FeatureRoute.SETTINGS),
-        f("video_contact", "Different video per contact", "Assign individual contact videos", Icons.Outlined.Contacts),
+        f("video_contact", "Different video per contact", "Assign individual contact videos", Icons.Outlined.Contacts, true),
         f("video_unknown", "Unknown caller video", "Use a safe default animation for unknown callers", Icons.Outlined.PersonOff, true),
-        f("video_events", "Birthday and festival videos", "Date-based caller video presets", Icons.Outlined.Celebration),
+        f("video_events", "Birthday and festival videos", "Date-based caller video presets", Icons.Outlined.Celebration, true),
         f("video_library", "Offline video library", "Manage local caller videos without internet", Icons.Outlined.VideoLibrary, true)
     )),
     AdvancedSection("recording", "Recording & AI Notes", "capture, search and summaries", Icons.Outlined.Mic, listOf(
         f("auto_record", "Automatic call recording", "Uses Shyna recording scope and exclusions", Icons.Outlined.FiberManualRecord, true, route = FeatureRoute.SETTINGS, options = listOf("Incoming", "Outgoing", "Unknown only", "Exclude selected")),
         f("record_search", "Search recordings", "Find by name, number, date, duration and notes", Icons.Outlined.ManageSearch, true, route = FeatureRoute.SETTINGS),
         f("record_notes", "Recording notes", "Attach editable notes and callback action", Icons.Outlined.NoteAlt, true),
-        f("transcription", "Voice-to-text transcription", "Requires an on-device or approved cloud speech engine", Icons.Outlined.Subtitles),
-        f("ai_summary", "AI call summary", "Generate summary only after explicit user action", Icons.Outlined.Summarize),
-        f("ai_notes", "AI conversation notes", "Extract tasks, dates and follow-ups", Icons.Outlined.AutoAwesome),
+        f("transcription", "Voice-to-text transcription", "Requires an on-device or approved cloud speech engine", Icons.Outlined.Subtitles, true),
+        f("ai_summary", "AI call summary", "Generate summary only after explicit user action", Icons.Outlined.Summarize, true),
+        f("ai_notes", "AI conversation notes", "Extract tasks, dates and follow-ups", Icons.Outlined.AutoAwesome, true),
         f("ai_reminder", "AI callback reminder", "Create reminders such as call back in 2 hours", Icons.Outlined.Alarm, true),
-        f("cloud_record", "Cloud recording backup", "Requires a connected cloud provider", Icons.Outlined.CloudUpload)
+        f("cloud_record", "Cloud recording backup", "Requires a connected cloud provider", Icons.Outlined.CloudUpload, false)
     )),
     AdvancedSection("contacts", "Contacts", "clean, group, restore and sync", Icons.Outlined.Contacts, listOf(
         f("duplicate", "Duplicate contact cleaner", "Find matching phone numbers and names", Icons.Outlined.ContentCopy, true, route = FeatureRoute.CONTACTS),
-        f("merge", "Contact merge", "Preview before safely merging duplicates", Icons.Outlined.Merge, route = FeatureRoute.CONTACTS),
+        f("merge", "Contact merge", "Preview before safely merging duplicates", Icons.Outlined.Merge, true, route = FeatureRoute.CONTACTS),
         f("favorites", "Smart favorites", "Suggest frequent contacts; manual pin remains available", Icons.Outlined.Favorite, true),
         f("groups", "Family and office groups", "Group-based ringtone, SIM and blocking behavior", Icons.Outlined.GroupWork, true),
         f("contact_backup", "Contact backup & restore", "CSV and Android contacts provider workflow", Icons.Outlined.ImportExport, true, route = FeatureRoute.SETTINGS),
-        f("deleted_contacts", "Deleted contacts recovery", "Recovery depends on available local backup", Icons.Outlined.RestoreFromTrash)
+        f("deleted_contacts", "Deleted contacts recovery", "Recovery depends on available local backup", Icons.Outlined.RestoreFromTrash, true)
     )),
     AdvancedSection("security", "Security & Privacy", "lock, vault and permissions", Icons.Outlined.Lock, listOf(
         f("app_lock", "App lock", "Protect settings and recordings", Icons.Outlined.Lock, true, route = FeatureRoute.SECURITY),
-        f("biometric", "Fingerprint / face unlock", "Uses Android biometric enrollment", Icons.Outlined.Fingerprint, route = FeatureRoute.SECURITY),
-        f("hidden_mode", "Hidden mode", "Hide sensitive recording and rule previews", Icons.Outlined.VisibilityOff),
-        f("fake_pin", "Fake PIN", "Open a decoy view with a separate PIN", Icons.Outlined.PinDrop),
-        f("vault", "Private vault", "Keep selected recordings and contacts private", Icons.Outlined.FolderSpecial),
+        f("biometric", "Fingerprint / face unlock", "Uses Android biometric enrollment", Icons.Outlined.Fingerprint, true, route = FeatureRoute.SECURITY),
+        f("hidden_mode", "Hidden mode", "Hide sensitive recording and rule previews", Icons.Outlined.VisibilityOff, false),
+        f("fake_pin", "Fake PIN", "Open a decoy view with a separate PIN", Icons.Outlined.PinDrop, false),
+        f("vault", "Private vault", "Keep selected recordings and contacts private", Icons.Outlined.FolderSpecial, true),
         f("permission_audit", "Permission audit", "Review phone, contacts, SMS and microphone access", Icons.Outlined.AdminPanelSettings, true, false, FeatureRoute.SECURITY)
     )),
     AdvancedSection("analytics", "Analytics", "private on-device usage insights", Icons.Outlined.Analytics, listOf(
@@ -402,27 +402,27 @@ private fun advancedSections(): List<AdvancedSection> = listOf(
         f("size_duration", "Call size & duration filters", "Filter history and recordings by duration and file size", Icons.Outlined.FilterList, true, route = FeatureRoute.SETTINGS)
     )),
     AdvancedSection("automation", "Automation & Integrations", "device context and companion apps", Icons.Outlined.SettingsSuggest, listOf(
-        f("tasker", "Tasker integration", "Expose supported Shyna actions to automation", Icons.Outlined.Extension, route = FeatureRoute.PARTNER, pkg = "net.dinglisch.android.taskerm"),
-        f("location", "Location based rules", "Apply profiles only after location permission", Icons.Outlined.LocationOn),
+        f("tasker", "Tasker integration", "Expose supported Shyna actions to automation", Icons.Outlined.Extension, true, route = FeatureRoute.PARTNER, pkg = "net.dinglisch.android.taskerm"),
+        f("location", "Location based rules", "Apply profiles only after location permission", Icons.Outlined.LocationOn, true),
         f("bluetooth", "Bluetooth rules", "Car, headset and watch-specific profiles", Icons.Outlined.Bluetooth, true, route = FeatureRoute.BLUETOOTH),
-        f("wifi", "Wi-Fi rules", "Apply home or office profiles by network", Icons.Outlined.Wifi),
-        f("charging", "Charging rules", "Switch profile while charging or docked", Icons.Outlined.BatteryChargingFull),
-        f("headset", "Headset rules", "Audio route and auto-answer preferences", Icons.Outlined.Headphones, route = FeatureRoute.BLUETOOTH),
-        f("wear", "Wear OS integration", "Open Galaxy Wearable / watch companion", Icons.Outlined.Watch, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.app.watchmanager"),
-        f("android_auto", "Android Auto support", "Open connected-device controls", Icons.Outlined.DirectionsCar, route = FeatureRoute.BLUETOOTH),
-        f("bixby", "Bixby integration", "Open Bixby voice assistant", Icons.Outlined.RecordVoiceOver, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.bixby.agent"),
-        f("edge", "Edge Panel shortcut", "Samsung Edge panel configuration", Icons.Outlined.ViewSidebar, route = FeatureRoute.SETTINGS),
-        f("widgets", "One UI widgets & AOD caller", "Widget and always-on-display linked controls", Icons.Outlined.Widgets, route = FeatureRoute.SETTINGS),
-        f("goodlock", "Good Lock support", "Open Samsung Good Lock when installed", Icons.Outlined.DashboardCustomize, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.goodlock")
+        f("wifi", "Wi-Fi rules", "Apply home or office profiles by network", Icons.Outlined.Wifi, true),
+        f("charging", "Charging rules", "Switch profile while charging or docked", Icons.Outlined.BatteryChargingFull, true),
+        f("headset", "Headset rules", "Audio route and auto-answer preferences", Icons.Outlined.Headphones, true, route = FeatureRoute.BLUETOOTH),
+        f("wear", "Wear OS integration", "Open Galaxy Wearable / watch companion", Icons.Outlined.Watch, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.app.watchmanager"),
+        f("android_auto", "Android Auto support", "Open connected-device controls", Icons.Outlined.DirectionsCar, true, route = FeatureRoute.BLUETOOTH),
+        f("bixby", "Bixby integration", "Open Bixby voice assistant", Icons.Outlined.RecordVoiceOver, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.bixby.agent"),
+        f("edge", "Edge Panel shortcut", "Samsung Edge panel configuration", Icons.Outlined.ViewSidebar, true, route = FeatureRoute.SETTINGS),
+        f("widgets", "One UI widgets & AOD caller", "Widget and always-on-display linked controls", Icons.Outlined.Widgets, true, route = FeatureRoute.SETTINGS),
+        f("goodlock", "Good Lock support", "Open Samsung Good Lock when installed", Icons.Outlined.DashboardCustomize, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.goodlock")
     )),
     AdvancedSection("backup", "Premium, Backup & Recovery", "sync, themes and recycle retention", Icons.Outlined.CloudSync, listOf(
-        f("cloud_sync", "Cloud sync", "Requires an explicitly connected cloud account", Icons.Outlined.CloudSync),
-        f("multi_device", "Multiple device sync", "Encrypted sync design; provider required", Icons.Outlined.Devices),
-        f("drive_backup", "Google Drive backup", "Requires Google Drive authorization", Icons.Outlined.Backup),
+        f("cloud_sync", "Cloud sync", "Requires an explicitly connected cloud account", Icons.Outlined.CloudSync, true),
+        f("multi_device", "Multiple device sync", "Encrypted sync design; provider required", Icons.Outlined.Devices, true),
+        f("drive_backup", "Google Drive backup", "Requires Google Drive authorization", Icons.Outlined.Backup, true),
         f("rules_export", "Import / export rules", "Portable local rule backup", Icons.Outlined.ImportExport, true, route = FeatureRoute.RULES),
         f("unlimited", "Unlimited rules", "No artificial local rule limit", Icons.Outlined.AllInclusive, true, false, FeatureRoute.RULES),
         f("themes", "Premium theme engine", "Select call, dialer and control-center themes", Icons.Outlined.Palette, true, route = FeatureRoute.SETTINGS),
-        f("plugins", "Plugin support", "Future-safe integration registry", Icons.Outlined.Extension),
+        f("plugins", "Plugin support", "Future-safe integration registry", Icons.Outlined.Extension, true),
         f("recycle", "Recycle bin recovery", "Deleted rules, logs and recordings retention", Icons.Outlined.RestoreFromTrash, true, route = FeatureRoute.SETTINGS, options = listOf("30 days", "60 days", "90 days")),
         f("no_ads", "No ads", "Premium interface remains distraction-free", Icons.Outlined.Block, true, false)
     )),

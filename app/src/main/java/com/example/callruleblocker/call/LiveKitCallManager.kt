@@ -17,8 +17,27 @@ class LiveKitCallManager(private val context: Context) {
     private val client = OkHttpClient()
     private val gson = Gson()
 
+    private fun getTokenServerUrl(): String {
+        val prefs = context.getSharedPreferences("smart_communication_v2", Context.MODE_PRIVATE)
+        return prefs.getString("server_url", LiveKitConfig.TOKEN_SERVER_URL) ?: LiveKitConfig.TOKEN_SERVER_URL
+    }
+
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+        val activeNetwork = connectivityManager?.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+        return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     suspend fun fetchToken(roomName: String, userId: String): String? = withContext(Dispatchers.IO) {
-        val url = "${LiveKitConfig.TOKEN_SERVER_URL}/token"
+        if (!isNetworkAvailable()) {
+            println("LiveKit: No internet connection")
+            return@withContext null
+        }
+
+        val baseUrl = getTokenServerUrl().trimEnd('/')
+        val url = "$baseUrl/token"
+        
         val json = JsonObject().apply {
             addProperty("roomName", roomName)
             addProperty("participantName", userId)
@@ -32,10 +51,27 @@ class LiveKitCallManager(private val context: Context) {
 
         try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@withContext null
+                if (!response.isSuccessful) {
+                    println("LiveKit: HTTP Error ${response.code}")
+                    return@withContext null
+                }
+                
                 val responseData = response.body?.string() ?: return@withContext null
-                val result = gson.fromJson(responseData, JsonObject::class.java)
-                return@withContext result.get("token")?.asString
+                if (responseData.isBlank()) return@withContext null
+
+                try {
+                    val result = gson.fromJson(responseData, JsonObject::class.java)
+                    val token = result.get("token")?.asString
+                    if (token.isNullOrBlank()) {
+                        println("LiveKit: Response missing token field")
+                        null
+                    } else {
+                        token
+                    }
+                } catch (e: Exception) {
+                    println("LiveKit: Malformed JSON response: ${e.message}")
+                    null
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -44,16 +80,22 @@ class LiveKitCallManager(private val context: Context) {
     }
 
     suspend fun joinRoom(roomName: String, userId: String): Room {
-        val token = fetchToken(roomName, userId) ?: throw IllegalStateException("Failed to fetch token from server")
-        val r = LiveKit.create(context)
-        r.connect(LiveKitConfig.URL, token)
-        room = r
+        val token = fetchToken(roomName, userId) ?: throw IllegalStateException("Failed to fetch token. Check your internet or server configuration.")
         
-        // Enable audio/video by default
-        r.localParticipant.setMicrophoneEnabled(true)
-        r.localParticipant.setCameraEnabled(true)
-        
-        return r
+        try {
+            val r = LiveKit.create(context)
+            r.connect(LiveKitConfig.URL, token)
+            room = r
+            
+            // Enable audio/video by default
+            r.localParticipant.setMicrophoneEnabled(true)
+            r.localParticipant.setCameraEnabled(true)
+            
+            return r
+        } catch (e: Exception) {
+            println("LiveKit: Connection failure: ${e.message}")
+            throw e
+        }
     }
 
     fun leaveRoom() {

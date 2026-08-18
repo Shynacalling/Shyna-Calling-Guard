@@ -12,10 +12,10 @@ private const val PREFS_NAME = "appearance_prefs_v1"
 
 @Immutable
 data class AppearanceSettings(
-    val accentColor: Color = Color(0xFF24C98A),
-    val uiScale: Float = 1.0f,
-    val callScreenThemeId: String = "Classic",
-    val dialPadThemeId: String = "Classic"
+    val accentColor: Color = Color(0xFFA98BFF), // Premium Purple as default
+    val uiScale: Float = 0.95f, // Standard scale
+    val callScreenThemeId: String = "Premium",
+    val dialPadThemeId: String = "AMOLED"
 )
 
 val LocalAppearance = staticCompositionLocalOf { AppearanceSettings() }
