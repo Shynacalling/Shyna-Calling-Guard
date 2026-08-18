@@ -146,27 +146,50 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         }
     }
 
-    // FETCH REAL USERS & PRESENCE (100% Logic)
+    // FETCH ALL REGISTERED USERS (Robust Strategy for Small Datasets)
     var allRealUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
             val userRef = db.collection("users").document(firebaseUid!!)
-            val listener = db.collection("users").addSnapshotListener { snapshots, error ->
+            
+            // 1. Sync self presence
+            userRef.update("isOnline", true, "lastSeen", com.google.firebase.Timestamp.now())
+                .addOnFailureListener {
+                    // If update fails, document might not exist, try set
+                    val currentEmail = auth.currentUser?.email?.lowercase() ?: ""
+                    val syncData = hashMapOf(
+                        "uid" to firebaseUid,
+                        "email" to currentEmail,
+                        "name" to currentEmail.substringBefore("@"),
+                        "isOnline" to true,
+                        "lastSeen" to com.google.firebase.Timestamp.now()
+                    )
+                    userRef.set(syncData, com.google.firebase.firestore.SetOptions.merge())
+                }
+
+            // 2. Listen to ALL users for instant discovery
+            val listener = db.collection("users")
+                .limit(50) // Fetch top 50 users (enough for this app)
+                .addSnapshotListener { snapshots, error ->
                 if (error != null) {
                     if (error.message?.contains("permission", true) == true) {
-                        Toast.makeText(context, "Search restricted: Use exact search.", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Search restricted: Check Firestore Rules.", Toast.LENGTH_SHORT).show()
                     }
                     return@addSnapshotListener
                 }
+                
                 val users = snapshots?.documents?.mapNotNull { doc ->
                     val uid = doc.id
                     val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
                     val email = doc.getString("email") ?: ""
-                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
                     val customUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
-                    if (uid != firebaseUid) RealUser(uid, name, email, phone, online, customUid) else null
+                    
+                    // We load everyone, filter self in the UI logic
+                    RealUser(uid, name, email, phone, online, customUid)
                 } ?: emptyList()
+                
                 allRealUsers = users
             }
             
@@ -671,13 +694,17 @@ private fun ChatsPage(
 
     val displayList = remember(messages.size, search, allRealUsers, remoteUsers) {
         val query = search.trim().lowercase()
-        val allKnown = (allRealUsers + remoteUsers).distinctBy { it.uid }
+        val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        
+        // Combine history with all known users, removing self
+        val allKnown = (allRealUsers + remoteUsers)
+            .distinctBy { it.uid }
+            .filter { it.uid != currentUid }
         
         val items = allKnown.map { user ->
             val lastMsg = messages.filter { it.peerName == user.uid || it.peerName == user.customUid || it.peerName == user.email }.maxByOrNull { it.time }
             
-            // 100% DEEP LOGIC MATCHING
-            // We check every field locally as well to ensure results are accurate
+            // UNIVERSAL DEEP MATCHING
             val match = query.isEmpty() || 
                         user.name.lowercase().contains(query) || 
                         user.email.lowercase().contains(query) || 
@@ -696,10 +723,8 @@ private fun ChatsPage(
         }
 
         if (query.isEmpty()) {
-            // Default View: Show active conversations
             items.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage?.time ?: 0L }
         } else {
-            // Search View: Show all matching users
             items.filter { it.matchSearch }.sortedByDescending { it.lastMessage?.time ?: 0L }
         }
     }
