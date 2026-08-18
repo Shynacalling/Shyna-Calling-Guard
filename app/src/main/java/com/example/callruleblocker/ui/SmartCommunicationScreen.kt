@@ -111,7 +111,14 @@ private val LinkChipBg = Color(0xFFEFF2F5)
 private val LinkChipSelected = Color(0xFFE7FCE3)
 private val LinkChipSelectedText = Color(0xFF008069)
 
-private data class RealUser(val uid: String, val name: String, val email: String, val phone: String = "", val isOnline: Boolean = false)
+private data class RealUser(
+    val uid: String, 
+    val name: String, 
+    val email: String, 
+    val phone: String = "", 
+    val isOnline: Boolean = false,
+    val customUid: String = ""
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -143,8 +150,9 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
                     val email = doc.getString("email") ?: ""
                     val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
+                    val customUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
-                    if (uid != firebaseUid) RealUser(uid, name, email, phone, online) else null
+                    if (uid != firebaseUid) RealUser(uid, name, email, phone, online, customUid) else null
                 } ?: emptyList()
                 allRealUsers = users
             }
@@ -578,18 +586,22 @@ private fun ChatsPage(
         fun userMatches(displayName: String, profile: RealUser?): Boolean {
             if (cleanSearch.isBlank()) return true
             
-            // Match Name (Babulal Jat -> babulaljat)
+            // 1. Match Display Name (Babulal Jat -> babulaljat)
             if (displayName.lowercase().replace(" ", "").contains(cleanSearch)) return true
             
-            // Match Email
+            // 2. Match Custom ID (@babulal -> babulal)
+            val queryNoAt = cleanSearch.removePrefix("@")
+            if (profile?.customUid?.lowercase()?.contains(queryNoAt) == true) return true
+            
+            // 3. Match Email
             if (profile?.email?.lowercase()?.contains(cleanSearch) == true) return true
             
-            // Match Phone (Ignores +, spaces, dashes)
+            // 4. Match Phone (Ignores +, spaces, dashes)
             val cleanPhone = profile?.phone?.replace(Regex("[^0-9]"), "") ?: ""
             val cleanQuery = cleanSearch.replace(Regex("[^0-9]"), "")
             if (cleanQuery.isNotEmpty() && cleanPhone.contains(cleanQuery)) return true
             
-            // Match User ID (Partial UID)
+            // 5. Match Firebase UID (Partial)
             if (profile?.uid?.lowercase()?.contains(cleanSearch) == true) return true
             
             return false
@@ -601,23 +613,27 @@ private fun ChatsPage(
         // 2. Map chatted users (Prioritize real profiles)
         val chattedItems = chattedUids.mapNotNull { uid ->
             val lastMsg = messages.filter { it.peerName == uid }.maxByOrNull { it.time }
-            val realProfile = allRealUsers.find { it.uid == uid || it.name == uid }
+            // Search profile by ANY identifier stored in history
+            val realProfile = allRealUsers.find { 
+                it.uid == uid || it.name == uid || it.customUid == uid || it.email == uid || it.phone == uid 
+            }
             
-            // Filter out system/dummy messages without valid identities
-            if (realProfile == null && uid.length < 10) return@mapNotNull null 
+            // Filter out empty/invalid history items, but allow short IDs if profile matches
+            if (realProfile == null && uid.length < 5) return@mapNotNull null 
             
             val displayName = realProfile?.name ?: uid
+            val subtitle = realProfile?.let { if (it.customUid.isNotBlank()) "@${it.customUid}" else "" } ?: ""
             val isOnline = realProfile?.isOnline ?: false
             val match = userMatches(displayName, realProfile)
             
-            ChatRowItem(uid, displayName, lastMsg, isOnline, match)
+            ChatRowItem(uid, displayName, lastMsg, isOnline, match, subtitle)
         }
 
-        // 3. Show other users from directory (even if no chat yet)
         val directoryItems = allRealUsers
             .filter { user -> user.uid !in chattedUids && user.name !in chattedUids }
             .map { user ->
-                ChatRowItem(user.uid, user.name, null, user.isOnline, userMatches(user.name, user))
+                val subtitle = if (user.customUid.isNotBlank()) "@${user.customUid}" else ""
+                ChatRowItem(user.uid, user.name, null, user.isOnline, userMatches(user.name, user), subtitle)
             }
 
         // 4. Combine: If searching, show both. If not, show History + some Suggested
@@ -643,6 +659,7 @@ private fun ChatsPage(
             items(history) { item ->
                 WhatsAppContactRow(
                     name = item.name, 
+                    subtitle = item.subtitle,
                     preview = item.lastMessage?.let { if (it.mine) "You: ${it.text}" else it.text } ?: "", 
                     icon = getIconForType(item.lastMessage?.type),
                     date = formatDate(item.lastMessage?.time),
@@ -657,6 +674,7 @@ private fun ChatsPage(
             items(others) { item ->
                 WhatsAppContactRow(
                     name = item.name, 
+                    subtitle = item.subtitle,
                     preview = "Start a new conversation", 
                     icon = Icons.Outlined.PersonAdd,
                     date = "",
@@ -710,12 +728,14 @@ private data class ChatRowItem(
     val name: String,
     val lastMessage: LocalChatMessage?,
     val isOnline: Boolean,
-    val matchSearch: Boolean
+    val matchSearch: Boolean,
+    val subtitle: String = ""
 )
 
 @Composable
 private fun WhatsAppContactRow(
     name: String, 
+    subtitle: String = "",
     preview: String, 
     icon: ImageVector,
     date: String,
@@ -762,15 +782,19 @@ private fun WhatsAppContactRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = name, 
-                    fontWeight = FontWeight.Bold, 
-                    fontSize = 17.sp, 
-                    color = LinkText,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = name, 
+                        fontWeight = FontWeight.Bold, 
+                        fontSize = 17.sp, 
+                        color = LinkText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (subtitle.isNotBlank()) {
+                        Text(subtitle, fontSize = 12.sp, color = LinkChipSelectedText)
+                    }
+                }
                 Text(
                     text = date, 
                     color = LinkMuted, 
@@ -2658,8 +2682,12 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     val db = remember { com.google.firebase.firestore.FirebaseFirestore.getInstance() }
+    
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var customUid by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    
     var isSignUp by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
@@ -2678,7 +2706,8 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -2686,6 +2715,40 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
             Spacer(Modifier.height(16.dp))
             Text("Access Shyna Pro features securely", color = LinkMuted)
             Spacer(Modifier.height(32.dp))
+
+            if (isSignUp) {
+                OutlinedTextField(
+                    value = customUid,
+                    onValueChange = { customUid = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' } },
+                    label = { Text("Custom User ID (compulsory)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    supportingText = { Text("Used for easy searching. Only letters, numbers and _") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LinkBlue, 
+                        unfocusedBorderColor = Color.LightGray, 
+                        focusedTextColor = LinkText, 
+                        unfocusedTextColor = LinkText
+                    )
+                )
+                Spacer(Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it.filter { c -> c.isDigit() || c == '+' } },
+                    label = { Text("Mobile Number (compulsory)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LinkBlue, 
+                        unfocusedBorderColor = Color.LightGray, 
+                        focusedTextColor = LinkText, 
+                        unfocusedTextColor = LinkText
+                    )
+                )
+                Spacer(Modifier.height(16.dp))
+            }
 
             OutlinedTextField(
                 value = email,
@@ -2738,31 +2801,64 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                 Button(
                     onClick = {
                         if (email.isBlank() || password.isBlank()) {
-                            Toast.makeText(context, "Please fill all fields", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Please fill email and password", Toast.LENGTH_SHORT).show()
                             return@Button
                         }
+                        if (isSignUp && (customUid.isBlank() || phone.isBlank())) {
+                            Toast.makeText(context, "ID and Phone are compulsory for signup", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        
                         loading = true
                         if (isSignUp) {
-                            auth.createUserWithEmailAndPassword(email.trim(), password)
-                                .addOnCompleteListener { task ->
-                                    loading = false
-                                    if (task.isSuccessful) {
-                                        val uid = auth.currentUser?.uid
-                                        if (uid != null) {
-                                            val user = hashMapOf(
-                                                "uid" to uid,
-                                                "email" to email.trim(),
-                                                "name" to email.substringBefore("@"),
-                                                "isOnline" to true,
-                                                "lastSeen" to com.google.firebase.Timestamp.now()
-                                            )
-                                            db.collection("users").document(uid).set(user)
-                                        }
-                                        Toast.makeText(context, "Account Created", Toast.LENGTH_SHORT).show()
-                                        onLoginSuccess()
+                            // 1. Check if custom ID or phone already exists in Firestore
+                            db.collection("users").whereEqualTo("customUid", customUid).get()
+                                .addOnSuccessListener { uidSnap ->
+                                    if (!uidSnap.isEmpty) {
+                                        loading = false
+                                        Toast.makeText(context, "User ID already taken", Toast.LENGTH_LONG).show()
                                     } else {
-                                        Toast.makeText(context, task.exception?.message ?: "Signup Failed", Toast.LENGTH_LONG).show()
+                                        db.collection("users").whereEqualTo("phone", phone).get()
+                                            .addOnSuccessListener { phoneSnap ->
+                                                if (!phoneSnap.isEmpty) {
+                                                    loading = false
+                                                    Toast.makeText(context, "Mobile number already registered", Toast.LENGTH_LONG).show()
+                                                } else {
+                                                    // 2. Proceed with Firebase Auth
+                                                    auth.createUserWithEmailAndPassword(email.trim(), password)
+                                                        .addOnCompleteListener { task ->
+                                                            if (task.isSuccessful) {
+                                                                val uid = auth.currentUser?.uid
+                                                                if (uid != null) {
+                                                                    val userMap = hashMapOf(
+                                                                        "uid" to uid,
+                                                                        "customUid" to customUid.trim(),
+                                                                        "email" to email.trim(),
+                                                                        "name" to email.substringBefore("@"),
+                                                                        "phone" to phone.trim(),
+                                                                        "isOnline" to true,
+                                                                        "lastSeen" to com.google.firebase.Timestamp.now()
+                                                                    )
+                                                                    db.collection("users").document(uid).set(userMap)
+                                                                    
+                                                                    // Send Email verification
+                                                                    auth.currentUser?.sendEmailVerification()
+                                                                }
+                                                                loading = false
+                                                                Toast.makeText(context, "Account Created. Please verify your email.", Toast.LENGTH_LONG).show()
+                                                                onLoginSuccess()
+                                                            } else {
+                                                                loading = false
+                                                                Toast.makeText(context, task.exception?.message ?: "Signup Failed", Toast.LENGTH_LONG).show()
+                                                            }
+                                                        }
+                                                }
+                                            }
                                     }
+                                }
+                                .addOnFailureListener {
+                                    loading = false
+                                    Toast.makeText(context, "Database error", Toast.LENGTH_SHORT).show()
                                 }
                         } else {
                             auth.signInWithEmailAndPassword(email.trim(), password)
