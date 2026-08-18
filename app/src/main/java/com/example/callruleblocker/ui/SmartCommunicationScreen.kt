@@ -580,83 +580,113 @@ private fun ChatsPage(
     allRealUsers: List<RealUser> = emptyList(),
     onOpenMedia: (LocalChatMessage) -> Unit = {}
 ) {
-    val activeUsers = remember(messages.size, search, allRealUsers) {
-        val cleanSearch = search.lowercase().trim().replace(" ", "")
+    val db = remember { com.google.firebase.firestore.FirebaseFirestore.getInstance() }
+    var remoteUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+
+    // 1. DEBOUNCED UNIVERSAL SEARCH ENGINE
+    LaunchedEffect(search) {
+        val query = search.trim().lowercase()
+        if (query.isEmpty()) {
+            remoteUsers = emptyList()
+            isSearching = false
+            return@LaunchedEffect
+        }
         
-        fun userMatches(displayName: String, profile: RealUser?): Boolean {
-            if (cleanSearch.isBlank()) return true
-            
-            // 1. Match Display Name (Babulal Jat -> babulaljat)
-            if (displayName.lowercase().replace(" ", "").contains(cleanSearch)) return true
-            
-            // 2. Match Custom ID (@babulal -> babulal)
-            val queryNoAt = cleanSearch.removePrefix("@")
-            if (profile?.customUid?.lowercase()?.contains(queryNoAt) == true) return true
-            
-            // 3. Match Email
-            if (profile?.email?.lowercase()?.contains(cleanSearch) == true) return true
-            
-            // 4. Match Phone (Ignores +, spaces, dashes)
-            val cleanPhone = profile?.phone?.replace(Regex("[^0-9]"), "") ?: ""
-            val cleanQuery = cleanSearch.replace(Regex("[^0-9]"), "")
-            if (cleanQuery.isNotEmpty() && cleanPhone.contains(cleanQuery)) return true
-            
-            // 5. Match Firebase UID (Partial)
-            if (profile?.uid?.lowercase()?.contains(cleanSearch) == true) return true
-            
-            return false
+        // Debounce: Wait 500ms after last keystroke
+        kotlinx.coroutines.delay(500)
+        isSearching = true
+        
+        val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+
+        // Build search tasks
+        val tasks = mutableListOf<com.google.android.gms.tasks.Task<com.google.firebase.firestore.QuerySnapshot>>()
+        
+        // Exact matches
+        tasks.add(db.collection("users").whereEqualTo("email", query).get())
+        tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
+        
+        // Prefix matches (Handles "baby" finding "babyshyna")
+        if (query.length >= 2) {
+            tasks.add(db.collection("users").orderBy("customUid").startAt(query).endAt(query + "\uf8ff").limit(20).get())
+            tasks.add(db.collection("users").orderBy("email").startAt(query).endAt(query + "\uf8ff").limit(20).get())
+            tasks.add(db.collection("users").orderBy("name").startAt(query).endAt(query + "\uf8ff").limit(20).get())
         }
 
-        // 1. Get all unique peers from history
-        val chattedUids = messages.map { it.peerName }.toSet()
-        
-        // 2. Map chatted users (Prioritize real profiles)
-        val chattedItems = chattedUids.mapNotNull { uid ->
-            val lastMsg = messages.filter { it.peerName == uid }.maxByOrNull { it.time }
-            // Search profile by ANY identifier stored in history
-            val realProfile = allRealUsers.find { 
-                it.uid == uid || it.name == uid || it.customUid == uid || it.email == uid || it.phone == uid 
+        tasks.forEach { task ->
+            task.addOnSuccessListener { snap ->
+                val found = snap.documents.mapNotNull { doc ->
+                    val uid = doc.id
+                    if (uid == currentUid) return@mapNotNull null
+                    
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: "User"
+                    val email = doc.getString("email") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
+                    val cUid = doc.getString("customUid") ?: ""
+                    val online = doc.getBoolean("isOnline") ?: false
+                    
+                    RealUser(uid, name, email, phone, online, cUid)
+                }
+                // Merge without duplicates
+                remoteUsers = (remoteUsers + found).distinctBy { it.uid }
+            }.addOnCompleteListener {
+                if (tasks.all { it.isComplete }) {
+                    isSearching = false
+                }
             }
+        }
+        
+        // Fallback safety timeout
+        kotlinx.coroutines.delay(5000)
+        isSearching = false
+    }
+
+    val displayList = remember(messages.size, search, allRealUsers, remoteUsers) {
+        val query = search.trim().lowercase()
+        val allKnown = (allRealUsers + remoteUsers).distinctBy { it.uid }
+        
+        val items = allKnown.map { user ->
+            val lastMsg = messages.filter { it.peerName == user.uid || it.peerName == user.customUid || it.peerName == user.email }.maxByOrNull { it.time }
             
-            // Filter out empty/invalid history items, but allow short IDs if profile matches
-            if (realProfile == null && uid.length < 5) return@mapNotNull null 
-            
-            val displayName = realProfile?.name ?: uid
-            val subtitle = realProfile?.let { if (it.customUid.isNotBlank()) "@${it.customUid}" else "" } ?: ""
-            val isOnline = realProfile?.isOnline ?: false
-            val match = userMatches(displayName, realProfile)
-            
-            ChatRowItem(uid, displayName, lastMsg, isOnline, match, subtitle)
+            // DEEP MATCHING (Handles "shyna" in "babyshyna")
+            val match = query.isEmpty() || 
+                        user.name.lowercase().contains(query) || 
+                        user.email.lowercase().contains(query) || 
+                        user.customUid.lowercase().contains(query) || 
+                        user.phone.replace(Regex("[^0-9]"), "").contains(query.replace(Regex("[^0-9]"), ""))
+
+            ChatRowItem(
+                id = user.uid,
+                name = user.name,
+                lastMessage = lastMsg,
+                isOnline = user.isOnline,
+                matchSearch = match,
+                subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email
+            )
         }
 
-        val directoryItems = allRealUsers
-            .filter { user -> user.uid !in chattedUids && user.name !in chattedUids }
-            .map { user ->
-                val subtitle = if (user.customUid.isNotBlank()) "@${user.customUid}" else ""
-                ChatRowItem(user.uid, user.name, null, user.isOnline, userMatches(user.name, user), subtitle)
-            }
-
-        // 4. Combine: If searching, show both. If not, show History + some Suggested
-        val result = if (cleanSearch.isNotBlank()) {
-            (chattedItems + directoryItems).filter { it.matchSearch }
+        if (query.isEmpty()) {
+            // Default View: Show active conversations
+            items.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage?.time ?: 0L }
         } else {
-            // If search is blank, show history + all others (since there are only 2 users total)
-            (chattedItems + directoryItems)
+            // Search View: Show all matching users
+            items.filter { it.matchSearch }.sortedByDescending { it.lastMessage?.time ?: 0L }
         }
-
-        result.sortedByDescending { it.lastMessage?.time ?: 0L }
     }
 
     LazyColumn(
         Modifier.fillMaxSize().background(LinkBg), 
         contentPadding = PaddingValues(top = 8.dp)
     ) {
-        val history = activeUsers.filter { it.lastMessage != null }
-        val others = activeUsers.filter { it.lastMessage == null }
+        if (isSearching) {
+            item { LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp), color = LinkGreen) }
+        }
 
-        if (history.isNotEmpty()) {
-            if (search.isNotBlank()) item { ListHeader("Chat History") }
-            items(history) { item ->
+        val query = search.trim()
+        
+        if (query.isEmpty()) {
+            // 1. History Section
+            items(displayList) { item ->
                 WhatsAppContactRow(
                     name = item.name, 
                     subtitle = item.subtitle,
@@ -667,31 +697,54 @@ private fun ChatsPage(
                     onClick = { onOpenChat(item.id) }
                 )
             }
-        }
-
-        if (others.isNotEmpty()) {
-            item { ListHeader(if (search.isNotBlank()) "Other Users Found" else "Suggested Contacts") }
-            items(others) { item ->
-                WhatsAppContactRow(
-                    name = item.name, 
-                    subtitle = item.subtitle,
-                    preview = "Start a new conversation", 
-                    icon = Icons.Outlined.PersonAdd,
-                    date = "",
-                    online = item.isOnline,
-                    onClick = { onOpenChat(item.id) }
-                )
+            
+            // 2. Suggestions (If few chats)
+            if (displayList.size < 5) {
+                val others = allRealUsers.filter { u -> displayList.none { it.id == u.uid } }.take(10)
+                if (others.isNotEmpty()) {
+                    item { ListHeader("Suggested for you") }
+                    items(others) { user ->
+                        WhatsAppContactRow(
+                            name = user.name,
+                            subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
+                            preview = if (user.isOnline) "Active now" else "Start a new chat",
+                            icon = Icons.Outlined.PersonAdd,
+                            date = "",
+                            online = user.isOnline,
+                            onClick = { onOpenChat(user.uid) }
+                        )
+                    }
+                }
             }
-        }
-        
-        if (activeUsers.isEmpty()) {
-            item {
-                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    val emptyText = if (search.isBlank()) 
-                        "No users online right now." 
-                    else 
-                        "No users found matching '$search'"
-                    Text(emptyText, color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        } else {
+            // 3. Dedicated Search Results
+            if (displayList.isNotEmpty()) {
+                item { ListHeader("Found ${displayList.size} users") }
+                items(displayList) { item ->
+                    WhatsAppContactRow(
+                        name = item.name, 
+                        subtitle = item.subtitle,
+                        preview = if (item.lastMessage != null) "Message history found" else "Tap to start chatting", 
+                        icon = if (item.lastMessage == null) Icons.Outlined.PersonSearch else getIconForType(item.lastMessage?.type),
+                        date = formatDate(item.lastMessage?.time),
+                        online = item.isOnline,
+                        onClick = { onOpenChat(item.id) }
+                    )
+                }
+            }
+            
+            // 4. Empty Result Handling
+            if (displayList.isEmpty() && !isSearching) {
+                item {
+                    Column(Modifier.fillMaxWidth().padding(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Outlined.SearchOff, null, Modifier.size(64.dp), tint = LinkMuted)
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "No users found for '$query'.\nTry the exact ID or full email address.",
+                            color = LinkMuted,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
                 }
             }
         }
@@ -2832,8 +2885,8 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                                                 if (uid != null) {
                                                                     val userMap = hashMapOf(
                                                                         "uid" to uid,
-                                                                        "customUid" to customUid.trim(),
-                                                                        "email" to email.trim(),
+                                                                        "customUid" to customUid.trim().lowercase(),
+                                                                        "email" to email.trim().lowercase(),
                                                                         "name" to email.substringBefore("@"),
                                                                         "phone" to phone.trim(),
                                                                         "isOnline" to true,
@@ -2867,7 +2920,15 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                     if (task.isSuccessful) {
                                         val uid = auth.currentUser?.uid
                                         if (uid != null) {
-                                            db.collection("users").document(uid).update("isOnline", true, "lastSeen", com.google.firebase.Timestamp.now())
+                                            // Sync/Update or Create if missing
+                                            val update = hashMapOf(
+                                                "uid" to uid,
+                                                "email" to email.trim().lowercase(),
+                                                "isOnline" to true,
+                                                "lastSeen" to com.google.firebase.Timestamp.now()
+                                            )
+                                            db.collection("users").document(uid)
+                                                .set(update, com.google.firebase.firestore.SetOptions.merge())
                                         }
                                         Toast.makeText(context, "Login Successful", Toast.LENGTH_SHORT).show()
                                         onLoginSuccess()
