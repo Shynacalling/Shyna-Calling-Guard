@@ -1,0 +1,5 @@
+- [x] Create `CallActionReceiver.kt`
+- [x] Update `OngoingCallNotification.kt` to remove `CallActionReceiver` class
+- [x] Update `AndroidManifest.xml` to fix namespace and class resolution
+- [/] Redirect build directory in `build.gradle.kts` to avoid path length issues
+- [ ] Verify manifest resolution and attempt build

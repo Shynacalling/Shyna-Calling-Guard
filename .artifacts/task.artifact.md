@@ -1,0 +1,13 @@
+- [ ] Permanent Home Screen Cleanup
+    - [x] Remove "Upgrade Banner" from `PhoneHomeScreen`
+- [ ] Dialer Success Fix (100% Reliability)
+    - [ ] Decouple state from gesture in `KeypadScreen`
+    - [ ] Separate backspace click from long-press logic
+    - [ ] Fix "Freeze" bug after backspace usage
+- [ ] Global Scaling Implementation
+    - [ ] Apply `.scaled()` to `SwipeRecentGroupRow`
+    - [ ] Apply `.scaled()` to `SwipeContactRow`
+    - [ ] Verify Pinch-to-Zoom works on lists
+- [ ] Terminological Refinement
+    - [ ] Update version rows in `RecordingSettingsScreen`
+- [ ] Verify build and finalize walkthrough
