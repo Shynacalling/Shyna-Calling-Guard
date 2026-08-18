@@ -78,8 +78,7 @@ dependencies {
     // LiveKit
     implementation("io.livekit:livekit-android:2.28.0")
     
-    // JWT for token generation (Lab use only)
-    implementation("io.jsonwebtoken:jjwt-api:0.13.0")
-    runtimeOnly("io.jsonwebtoken:jjwt-impl:0.13.0")
-    runtimeOnly("io.jsonwebtoken:jjwt-orgjson:0.13.0")
+    // Networking
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.10.1")
 }

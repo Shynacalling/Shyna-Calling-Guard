@@ -83,6 +83,10 @@ class MainActivity : FragmentActivity() {
 
         auth = FirebaseAuth.getInstance()
         firebaseUser = auth.currentUser
+        
+        auth.addAuthStateListener {
+            firebaseUser = it.currentUser
+        }
 
         // REDIRECT IF CALL IS ACTIVE: Ensures clicking the app icon always returns to the live call.
         if (com.example.callruleblocker.call.CallHolder.currentCall.value != null) {

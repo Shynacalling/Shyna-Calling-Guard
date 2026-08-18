@@ -4,40 +4,47 @@ import android.content.Context
 import com.example.callruleblocker.data.LiveKitConfig
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
-import io.livekit.android.room.track.LocalVideoTrack
-import io.livekit.android.room.track.Track
-import io.livekit.android.room.track.VideoTrack
-import io.jsonwebtoken.Jwts
-import io.jsonwebtoken.security.Keys
 import kotlinx.coroutines.*
-import java.util.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import com.google.gson.Gson
+import com.google.gson.JsonObject
 
 class LiveKitCallManager(private val context: Context) {
     private var room: Room? = null
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val client = OkHttpClient()
+    private val gson = Gson()
 
-    fun createToken(roomName: String, participantIdentity: String): String {
-        val secretKey = Keys.hmacShaKeyFor(LiveKitConfig.API_SECRET.toByteArray())
+    suspend fun fetchToken(roomName: String, userId: String): String? = withContext(Dispatchers.IO) {
+        val url = "${LiveKitConfig.TOKEN_SERVER_URL}/token"
+        val json = JsonObject().apply {
+            addProperty("roomName", roomName)
+            addProperty("participantName", userId)
+        }
         
-        val claims = mutableMapOf<String, Any>()
-        claims["video"] = mapOf(
-            "roomJoin" to true,
-            "room" to roomName,
-            "canPublish" to true,
-            "canSubscribe" to true
-        )
-        
-        return Jwts.builder()
-            .issuer(LiveKitConfig.API_KEY)
-            .expiration(Date(System.currentTimeMillis() + 3600 * 1000)) // 1 hour
-            .subject(participantIdentity)
-            .claims(claims)
-            .signWith(secretKey)
-            .compact()
+        val body = gson.toJson(json).toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .post(body)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val responseData = response.body?.string() ?: return@withContext null
+                val result = gson.fromJson(responseData, JsonObject::class.java)
+                return@withContext result.get("token")?.asString
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return@withContext null
+        }
     }
 
     suspend fun joinRoom(roomName: String, userId: String): Room {
-        val token = createToken(roomName, userId)
+        val token = fetchToken(roomName, userId) ?: throw IllegalStateException("Failed to fetch token from server")
         val r = LiveKit.create(context)
         r.connect(LiveKitConfig.URL, token)
         room = r

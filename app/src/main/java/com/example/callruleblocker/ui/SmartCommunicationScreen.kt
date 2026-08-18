@@ -71,24 +71,64 @@ private val LinkMuted = Color(0xFFA8ADB7)
 fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
-    val firebaseUid = auth.currentUser?.uid
+    var firebaseUid by remember { mutableStateOf(auth.currentUser?.uid) }
+    
+    DisposableEffect(auth) {
+        val listener = com.google.firebase.auth.FirebaseAuth.AuthStateListener {
+            firebaseUid = it.currentUser?.uid
+        }
+        auth.addAuthStateListener(listener)
+        onDispose { auth.removeAuthStateListener(listener) }
+    }
+
     val prefs = remember { context.getSharedPreferences(COMM_PREFS, Context.MODE_PRIVATE) }
     var selectedTab by remember { mutableStateOf(if (initialOnline) LinkTab.CHATS else LinkTab.CALLS) }
     var menuOpen by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     var serverOpen by remember { mutableStateOf(false) }
-    var serverUrl by remember { mutableStateOf(prefs.getString("server_url", LiveKitConfig.URL) ?: LiveKitConfig.URL) }
-    var apiKey by remember { mutableStateOf(prefs.getString("api_key", LiveKitConfig.API_KEY) ?: LiveKitConfig.API_KEY) }
-    var apiSecret by remember { mutableStateOf(prefs.getString("api_secret", LiveKitConfig.API_SECRET) ?: LiveKitConfig.API_SECRET) }
+    var accountDialogOpen by remember { mutableStateOf(false) }
+    var serverUrl by remember { mutableStateOf(prefs.getString("server_url", LiveKitConfig.TOKEN_SERVER_URL) ?: LiveKitConfig.TOKEN_SERVER_URL) }
     var userId by remember { mutableStateOf(prefs.getString("user_id", firebaseUid ?: "") ?: "") }
     var internetReady by remember { mutableStateOf(hasInternet(context)) }
     var message by remember { mutableStateOf("") }
     var selectedPeer by remember { mutableStateOf<String?>(null) }
     val messages = remember { mutableStateListOf<LocalChatMessage>().apply { addAll(loadMessages(prefs)) } }
 
-    selectedPeer?.let { peer ->
-        SmartChatDetailScreen(peer = peer, prefs = prefs, userId = userId, onBack = { selectedPeer = null })
+    var showLoginForm by remember { mutableStateOf(false) }
+
+    if (selectedPeer != null) {
+        SmartChatDetailScreen(peer = selectedPeer!!, prefs = prefs, userId = userId, onBack = { selectedPeer = null })
+        return
+    }
+
+    if (firebaseUid == null && !showLoginForm) {
+        Box(Modifier.fillMaxSize().background(LinkBg), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Welcome to Shyna Link", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("Secure communication anywhere", color = LinkMuted, modifier = Modifier.padding(top = 8.dp))
+                Spacer(Modifier.height(48.dp))
+                Button(
+                    onClick = { showLoginForm = true },
+                    modifier = Modifier.width(200.dp).height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = LinkBlue),
+                    shape = RoundedCornerShape(25.dp)
+                ) {
+                    Text("Login", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = onBack, modifier = Modifier.padding(top = 16.dp)) {
+                    Text("Go Back", color = LinkMuted)
+                }
+            }
+        }
+        return
+    }
+
+    if (firebaseUid == null && showLoginForm) {
+        ShynaAuthScreen(
+            onBack = { showLoginForm = false },
+            onLoginSuccess = { showLoginForm = false }
+        )
         return
     }
 
@@ -122,7 +162,15 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                             MenuItem("Refresh connections", Icons.Outlined.Refresh) { internetReady = hasInternet(context); menuOpen = false }
                             MenuItem("Nearby device settings", Icons.Outlined.Devices) { openSettings(context, Settings.ACTION_BLUETOOTH_SETTINGS); menuOpen = false }
                             MenuItem("Security & privacy", Icons.Outlined.Security) { selectedTab = LinkTab.UPDATES; menuOpen = false }
-                            MenuItem("Server & account", Icons.Outlined.CloudSync) { serverOpen = true; selectedTab = LinkTab.CALLS; menuOpen = false }
+                            MenuItem("Account", Icons.Outlined.AccountCircle) { 
+                                accountDialogOpen = true 
+                                menuOpen = false 
+                            }
+                            MenuItem("Server Settings", Icons.Outlined.Dns) { 
+                                serverOpen = true
+                                selectedTab = LinkTab.CALLS
+                                menuOpen = false 
+                            }
                         }
                     }
                 },
@@ -131,25 +179,27 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         },
         bottomBar = { LinkBottomBar(selectedTab) { selectedTab = it } },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    selectedTab = when (selectedTab) {
-                        LinkTab.CHATS -> LinkTab.CHATS
-                        LinkTab.UPDATES -> LinkTab.UPDATES
-                        LinkTab.COMMUNITIES -> LinkTab.COMMUNITIES
-                        LinkTab.CALLS -> LinkTab.CALLS
-                    }
-                    Toast.makeText(context, when (selectedTab) {
-                        LinkTab.CHATS -> "New chat ready"
-                        LinkTab.UPDATES -> "Status composer ready"
-                        LinkTab.COMMUNITIES -> "Create community"
-                        LinkTab.CALLS -> "New call"
-                    }, Toast.LENGTH_SHORT).show()
-                },
-                containerColor = LinkGreen,
-                contentColor = Color.Black,
-                shape = RoundedCornerShape(18.dp)
-            ) { Icon(when (selectedTab) { LinkTab.CHATS -> Icons.Outlined.AddComment; LinkTab.UPDATES -> Icons.Outlined.PhotoCamera; LinkTab.COMMUNITIES -> Icons.Outlined.GroupAdd; LinkTab.CALLS -> Icons.Outlined.AddIcCall }, null) }
+            if (firebaseUid != null) {
+                FloatingActionButton(
+                    onClick = {
+                        selectedTab = when (selectedTab) {
+                            LinkTab.CHATS -> LinkTab.CHATS
+                            LinkTab.UPDATES -> LinkTab.UPDATES
+                            LinkTab.COMMUNITIES -> LinkTab.COMMUNITIES
+                            LinkTab.CALLS -> LinkTab.CALLS
+                        }
+                        Toast.makeText(context, when (selectedTab) {
+                            LinkTab.CHATS -> "New chat ready"
+                            LinkTab.UPDATES -> "Status composer ready"
+                            LinkTab.COMMUNITIES -> "Create community"
+                            LinkTab.CALLS -> "New call"
+                        }, Toast.LENGTH_SHORT).show()
+                    },
+                    containerColor = LinkGreen,
+                    contentColor = Color.Black,
+                    shape = RoundedCornerShape(18.dp)
+                ) { Icon(when (selectedTab) { LinkTab.CHATS -> Icons.Outlined.AddComment; LinkTab.UPDATES -> Icons.Outlined.PhotoCamera; LinkTab.COMMUNITIES -> Icons.Outlined.GroupAdd; LinkTab.CALLS -> Icons.Outlined.AddIcCall }, null) }
+            }
         }
     ) { padding ->
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(LinkBg, Color(0xFF0D1018), LinkBg))).padding(padding)) {
@@ -172,15 +222,62 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     onServerOpenChange = { serverOpen = it },
                     serverUrl = serverUrl,
                     onServerUrlChange = { serverUrl = it },
-                    apiKey = apiKey,
-                    onApiKeyChange = { apiKey = it },
-                    apiSecret = apiSecret,
-                    onApiSecretChange = { apiSecret = it },
                     userId = userId,
                     onUserIdChange = { userId = it }
                 )
             }
         }
+    }
+
+    if (accountDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { accountDialogOpen = false },
+            containerColor = LinkCard,
+            titleContentColor = Color.White,
+            textContentColor = Color.White,
+            title = { Text("Account", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("User: ${auth.currentUser?.email ?: "null"}", color = Color.Gray, fontSize = 16.sp)
+                    
+                    OutlinedTextField(
+                        value = "$serverUrl/token",
+                        onValueChange = {},
+                        label = { Text("URL") },
+                        modifier = Modifier.fillMaxWidth(),
+                        readOnly = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LinkBlue,
+                            unfocusedBorderColor = Color.DarkGray,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedLabelColor = LinkBlue,
+                            unfocusedLabelColor = Color.Gray
+                        )
+                    )
+                    
+                    if (firebaseUid != null) {
+                        Button(
+                            onClick = { 
+                                auth.signOut()
+                                accountDialogOpen = false 
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53E36))
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.Logout, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Logout")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { accountDialogOpen = false }) {
+                    Text("Close", color = LinkCyan)
+                }
+            }
+        )
     }
 }
 
@@ -274,10 +371,6 @@ private fun CallsPage(
     onServerOpenChange: (Boolean) -> Unit,
     serverUrl: String,
     onServerUrlChange: (String) -> Unit,
-    apiKey: String,
-    onApiKeyChange: (String) -> Unit,
-    apiSecret: String,
-    onApiSecretChange: (String) -> Unit,
     userId: String,
     onUserIdChange: (String) -> Unit
 ) {
@@ -325,12 +418,10 @@ private fun CallsPage(
         item {
             PremiumCard("Connection setup", Icons.Outlined.CloudSync) {
                 StatusLine("Internet", if (internetReady) "Connected" else "Offline", internetReady)
-                StatusLine("LiveKit Cloud", if (serverUrl.isBlank() || apiKey.isBlank()) "Not configured" else "Configured", serverUrl.isNotBlank() && apiKey.isNotBlank())
-                OutlinedButton(onClick = { onServerOpenChange(!serverOpen) }, modifier = Modifier.fillMaxWidth()) { Text(if (serverOpen) "Hide LiveKit settings" else "LiveKit & account settings") }
+                StatusLine("Token Server", if (serverUrl.isBlank()) "Not configured" else "Configured", serverUrl.isNotBlank())
+                OutlinedButton(onClick = { onServerOpenChange(!serverOpen) }, modifier = Modifier.fillMaxWidth()) { Text(if (serverOpen) "Hide Server settings" else "Token Server settings") }
                 if (serverOpen) {
-                    OutlinedTextField(serverUrl, onServerUrlChange, Modifier.fillMaxWidth(), label = { Text("LiveKit URL (wss://...)") }, singleLine = true)
-                    OutlinedTextField(apiKey, onApiKeyChange, Modifier.fillMaxWidth(), label = { Text("API Key") }, singleLine = true)
-                    OutlinedTextField(apiSecret, onApiSecretChange, Modifier.fillMaxWidth(), label = { Text("API Secret") }, singleLine = true)
+                    OutlinedTextField(serverUrl, onServerUrlChange, Modifier.fillMaxWidth(), label = { Text("Token Server URL (https://...)") }, singleLine = true)
                     OutlinedTextField(
                         userId, 
                         onUserIdChange, 
@@ -350,8 +441,6 @@ private fun CallsPage(
                         } else { 
                             prefs.edit()
                                 .putString("server_url", serverUrl.trim())
-                                .putString("api_key", apiKey.trim())
-                                .putString("api_secret", apiSecret.trim())
                                 .putString("user_id", userId.trim())
                                 .apply()
                             Toast.makeText(context, "Connection saved", Toast.LENGTH_SHORT).show() 
@@ -649,7 +738,12 @@ private enum class ChatTool { NONE, AUDIO_TEST, VIDEO_SETTINGS, GROUP_CALL, ATTA
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SmartChatDetailScreen(peer: String, prefs: android.content.SharedPreferences, userId: String, onBack: () -> Unit) {
+private fun SmartChatDetailScreen(
+    peer: String, 
+    prefs: android.content.SharedPreferences, 
+    userId: String, 
+    onBack: () -> Unit
+) {
     val context = LocalContext.current
     var text by remember { mutableStateOf("") }
     var activeTool by remember { mutableStateOf(ChatTool.NONE) }
@@ -738,7 +832,7 @@ private fun SmartChatDetailScreen(peer: String, prefs: android.content.SharedPre
                         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.Mic, null, tint = Color.Red)
                             Text(
-                                String.format(Locale.getDefault(), "%02d:%02d", recordingTime / 60, recordingTime % 60),
+                                remember(recordingTime) { String.format(Locale.getDefault(), "%02d:%02d", recordingTime / 60, recordingTime % 60) },
                                 modifier = Modifier.padding(start = 8.dp)
                             )
                             Spacer(Modifier.weight(1f))
@@ -877,6 +971,7 @@ private fun SmartChatDetailScreen(peer: String, prefs: android.content.SharedPre
         }
     }
 
+
     when (activeTool) {
         ChatTool.AUDIO_TEST -> AudioVideoTestDialog(context, prefs, onDismiss = { activeTool = ChatTool.NONE }, openVideo = { activeTool = ChatTool.VIDEO_SETTINGS })
         ChatTool.VIDEO_SETTINGS -> VideoCallSettingsDialog(
@@ -999,3 +1094,136 @@ private fun VideoCallSettingsDialog(
 @Composable private fun AttachmentSheet(onAction: (ChatTool) -> Unit, onDismiss: () -> Unit) { AlertDialog(onDismissRequest = onDismiss, title = { Text("Share") }, text = { Column { FeatureRow("Camera", "Take a photo or video", Icons.Outlined.CameraAlt); FeatureRow("Gallery", "Photos and videos", Icons.Outlined.PhotoLibrary) { onAction(ChatTool.GALLERY) }; FeatureRow("Document", "PDF, ZIP, APK and more", Icons.Outlined.Description); FeatureRow("Contact", "Share contact card", Icons.Outlined.ContactPage); FeatureRow("Location", "Live or current location", Icons.Outlined.LocationOn) { onAction(ChatTool.LOCATION) }; FeatureRow("Audio", "Voice recording or audio file", Icons.Outlined.AudioFile) } }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }) }
 
 @Composable private fun SecurityDialog(onDismiss: () -> Unit) { AlertDialog(onDismissRequest = onDismiss, title = { Text("Security details") }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { DiagnosticLine("End-to-end encryption", "Enabled", true); DiagnosticLine("Device authentication", "Verified", true); DiagnosticLine("Session key", "Rotates automatically", true); DiagnosticLine("Secure local history", "Enabled", true); Text("QR verification and safety-number comparison can be used before sensitive calls.", fontSize = 12.sp) } }, confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }) }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
+    val context = LocalContext.current
+    val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var isSignUp by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+
+    Scaffold(
+        containerColor = LinkBg,
+        topBar = {
+            TopAppBar(
+                title = { Text(if (isSignUp) "Create Account" else "Login", fontWeight = FontWeight.Bold) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null) } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = LinkBg, titleContentColor = Color.White, navigationIconContentColor = Color.White)
+            )
+        }
+    ) { padding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(Icons.Outlined.Lock, null, tint = LinkBlue, modifier = Modifier.size(64.dp))
+            Spacer(Modifier.height(16.dp))
+            Text("Access Shyna Link features securely", color = LinkMuted)
+            Spacer(Modifier.height(32.dp))
+
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                label = { Text("Email Address") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LinkBlue, unfocusedBorderColor = Color.DarkGray, focusedLabelColor = LinkBlue, unfocusedLabelColor = Color.Gray, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+            )
+            Spacer(Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = if (passwordVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(if (passwordVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, null, tint = Color.Gray)
+                    }
+                },
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LinkBlue, unfocusedBorderColor = Color.DarkGray, focusedLabelColor = LinkBlue, unfocusedLabelColor = Color.Gray, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            if (loading) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = LinkBlue)
+                }
+            } else {
+                Button(
+                    onClick = {
+                        if (email.isBlank() || password.isBlank()) {
+                            Toast.makeText(context, "Please fill all fields", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        loading = true
+                        if (isSignUp) {
+                            auth.createUserWithEmailAndPassword(email.trim(), password)
+                                .addOnCompleteListener { task ->
+                                    loading = false
+                                    if (task.isSuccessful) {
+                                        Toast.makeText(context, "Account Created", Toast.LENGTH_SHORT).show()
+                                        onLoginSuccess()
+                                    } else {
+                                        Toast.makeText(context, task.exception?.message ?: "Signup Failed", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                        } else {
+                            auth.signInWithEmailAndPassword(email.trim(), password)
+                                .addOnCompleteListener { task ->
+                                    loading = false
+                                    if (task.isSuccessful) {
+                                        Toast.makeText(context, "Login Successful", Toast.LENGTH_SHORT).show()
+                                        onLoginSuccess()
+                                    } else {
+                                        Toast.makeText(context, task.exception?.message ?: "Login Failed", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = LinkBlue),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(if (isSignUp) "CREATE ACCOUNT" else "LOGIN", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (isSignUp) "Already have an account?" else "New user?", color = LinkMuted)
+                TextButton(onClick = { isSignUp = !isSignUp }) {
+                    Text(if (isSignUp) "Login" else "Sign Up", color = LinkCyan)
+                }
+            }
+
+            if (!isSignUp) {
+                TextButton(onClick = {
+                    if (email.isBlank()) {
+                        Toast.makeText(context, "Enter your email first", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    auth.sendPasswordResetEmail(email.trim())
+                        .addOnSuccessListener { Toast.makeText(context, "Reset email sent to $email", Toast.LENGTH_LONG).show() }
+                        .addOnFailureListener { Toast.makeText(context, it.message ?: "Failed to send reset email", Toast.LENGTH_LONG).show() }
+                }) {
+                    Text("Forgot Password?", color = Color.Gray, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
