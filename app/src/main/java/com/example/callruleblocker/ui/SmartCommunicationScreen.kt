@@ -598,7 +598,7 @@ private fun ChatsPage(
     var remoteUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
 
-    // 1. DEBOUNCED UNIVERSAL SEARCH ENGINE (Professional Grade)
+    // 1. ULTIMATE DISCOVERY ENGINE (Professional Grade)
     LaunchedEffect(search) {
         val queryRaw = search.trim()
         val query = queryRaw.lowercase()
@@ -608,25 +608,24 @@ private fun ChatsPage(
             return@LaunchedEffect
         }
         
-        // Debounce: Wait 500ms
-        kotlinx.coroutines.delay(500)
+        // Debounce for 300ms
+        kotlinx.coroutines.delay(300)
         isSearching = true
         
         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
 
-        // DISCOVERY ENGINE - firing multiple parallel queries to maximize discovery
+        // DISCOVERY TASKS
         val tasks = mutableListOf<com.google.android.gms.tasks.Task<com.google.firebase.firestore.QuerySnapshot>>()
         
-        // Exact Search
+        // Match 1: Exact Email (Fastest)
         tasks.add(db.collection("users").whereEqualTo("email", query).get())
-        tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
-        tasks.add(db.collection("users").whereEqualTo("phone", queryRaw).get())
         
-        // Prefix Search (Discovery)
-        if (query.length >= 3) {
-            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("email", query).whereLessThanOrEqualTo("email", query + "\uf8ff").limit(10).get())
-            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("customUid", query).whereLessThanOrEqualTo("customUid", query + "\uf8ff").limit(10).get())
-            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("name", queryRaw).whereLessThanOrEqualTo("name", queryRaw + "\uf8ff").limit(10).get())
+        // Match 2: Exact Custom ID
+        tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
+
+        // Match 3: Prefix Discovery (for partial results)
+        if (query.length >= 2) {
+            tasks.add(db.collection("users").orderBy("email").startAt(query).endAt(query + "\uf8ff").limit(10).get())
         }
 
         tasks.forEach { task ->
@@ -635,26 +634,22 @@ private fun ChatsPage(
                     val uid = doc.id
                     if (uid == currentUid) return@mapNotNull null
                     
-                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: "User"
                     val email = doc.getString("email") ?: ""
-                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
+                    val phone = doc.getString("phone") ?: ""
                     val cUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
                     
                     RealUser(uid, name, email, phone, online, cUid)
                 }
                 remoteUsers = (remoteUsers + found).distinctBy { it.uid }
-            }.addOnFailureListener { e ->
-                if (e.message?.contains("permission", true) == true) {
-                    Toast.makeText(context, "Search restricted: Check Firestore rules", Toast.LENGTH_SHORT).show()
-                }
             }.addOnCompleteListener {
                 if (tasks.all { it.isComplete }) isSearching = false
             }
         }
         
-        // Final fallback: if exact UID is provided
-        if (query.length > 20) {
+        // Extra Fallback: Direct ID Lookup if string is long
+        if (queryRaw.length > 20) {
             db.collection("users").document(queryRaw).get().addOnSuccessListener { doc ->
                 if (doc.exists() && doc.id != currentUid) {
                     val user = RealUser(
@@ -670,7 +665,7 @@ private fun ChatsPage(
             }
         }
         
-        kotlinx.coroutines.delay(5000)
+        kotlinx.coroutines.delay(7000)
         isSearching = false
     }
 

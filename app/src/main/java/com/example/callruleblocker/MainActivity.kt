@@ -282,6 +282,11 @@ class MainActivity : FragmentActivity() {
                 firebaseUser = auth.currentUser
                 if (task.isSuccessful) {
                     val uid = auth.currentUser?.uid
+                    val currentEmail = auth.currentUser?.email ?: ""
+                    if (uid != null) {
+                        // CRITICAL: Sync profile to Firestore on EVERY login to ensure searchability
+                        saveUserProfile(uid, currentEmail.substringBefore("@"), currentEmail, "")
+                    }
                     Toast.makeText(this, "Login Successful", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, task.exception?.message ?: "Login Failed", Toast.LENGTH_SHORT).show()
