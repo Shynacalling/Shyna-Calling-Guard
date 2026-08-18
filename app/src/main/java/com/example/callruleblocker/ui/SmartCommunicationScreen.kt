@@ -538,7 +538,8 @@ private fun CallsPage(
                             modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(message.time)), color = Color.White, fontSize = 10.sp)
+                            val timeString = remember(message.time) { SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(message.time)) }
+                            Text(timeString, color = Color.White, fontSize = 10.sp)
                             if (message.mine) {
                                 Spacer(Modifier.width(4.dp))
                                 Icon(Icons.Outlined.DoneAll, null, tint = LinkCyan, modifier = Modifier.size(14.dp))
@@ -578,7 +579,8 @@ private fun CallsPage(
                     Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { 
                         Text(message.text)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                            Text(SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(message.time)), color = LinkMuted, fontSize = 10.sp) 
+                            val timeString = remember(message.time) { SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(message.time)) }
+                            Text(timeString, color = LinkMuted, fontSize = 10.sp) 
                             if (message.mine) {
                                 Spacer(Modifier.width(4.dp))
                                 Icon(Icons.Outlined.DoneAll, null, tint = LinkCyan, modifier = Modifier.size(14.dp))

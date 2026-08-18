@@ -71,9 +71,11 @@ fun GalleryPickerScreen(onBack: () -> Unit, onItemsSelected: (List<String>) -> U
         }
     }
 
-    val groupedItems = mediaItems.groupBy { 
-        val date = Date(it.dateAdded)
-        SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(date)
+    val groupedItems = remember(mediaItems.size) {
+        mediaItems.groupBy { 
+            val date = Date(it.dateAdded)
+            SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(date)
+        }
     }
 
     Scaffold(

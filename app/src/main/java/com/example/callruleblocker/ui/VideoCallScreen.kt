@@ -161,14 +161,7 @@ fun VideoRenderer(track: VideoTrack, room: Room, modifier: Modifier = Modifier) 
     AndroidView(
         factory = { context ->
             TextureViewRenderer(context).apply {
-                try {
-                    // Initialize with Room's EGL context if accessible
-                    // Most versions of LiveKit SDK provide access to eglBase or it's handled internally
-                    // If eglBase is internal, we use a default init.
-                    init(io.livekit.android.LiveKit.create(context).eglBase.eglBaseContext, null)
-                } catch (e: Exception) {
-                    // Fallback or log
-                }
+                room.initVideoRenderer(this)
             }
         },
         modifier = modifier,
@@ -177,6 +170,7 @@ fun VideoRenderer(track: VideoTrack, room: Room, modifier: Modifier = Modifier) 
         },
         onRelease = { renderer ->
             track.removeRenderer(renderer)
+            renderer.release()
         }
     )
 }
