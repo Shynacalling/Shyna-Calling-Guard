@@ -250,11 +250,13 @@ class MainActivity : FragmentActivity() {
                 firebaseUser = auth.currentUser
                 if (task.isSuccessful) {
                     val uid = auth.currentUser?.uid
+                    val currentEmail = auth.currentUser?.email ?: ""
                     if (uid != null) {
-                        saveUserProfile(uid, "Rahul", email, "9876543210")
+                        saveUserProfile(uid, currentEmail.substringBefore("@"), currentEmail, "")
                     }
                     Toast.makeText(this, "Signup Successful", Toast.LENGTH_SHORT).show()
-                } else {
+                }
+ else {
                     Toast.makeText(this, task.exception?.message ?: "Signup Failed", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -265,10 +267,12 @@ class MainActivity : FragmentActivity() {
         val user = hashMapOf(
             "uid" to uid,
             "name" to name,
-            "email" to email,
-            "phone" to phone
+            "email" to email.trim().lowercase(),
+            "phone" to phone,
+            "isOnline" to true,
+            "lastSeen" to com.google.firebase.Timestamp.now()
         )
-        db.collection("users").document(uid).set(user)
+        db.collection("users").document(uid).set(user, com.google.firebase.firestore.SetOptions.merge())
             .addOnFailureListener { it.printStackTrace() }
     }
 

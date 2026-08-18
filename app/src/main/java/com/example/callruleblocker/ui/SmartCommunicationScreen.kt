@@ -128,23 +128,36 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     val db = remember { com.google.firebase.firestore.FirebaseFirestore.getInstance() }
     var firebaseUid by remember { mutableStateOf(auth.currentUser?.uid) }
     
+    // ENSURE PROFILE SYNC
+    LaunchedEffect(firebaseUid) {
+        if (firebaseUid != null) {
+            val userRef = db.collection("users").document(firebaseUid!!)
+            val currentEmail = auth.currentUser?.email?.lowercase() ?: ""
+            userRef.get().addOnSuccessListener { doc ->
+                val syncData = hashMapOf(
+                    "uid" to firebaseUid,
+                    "email" to currentEmail,
+                    "name" to (doc.getString("name") ?: currentEmail.substringBefore("@")),
+                    "isOnline" to true,
+                    "lastSeen" to com.google.firebase.Timestamp.now()
+                )
+                userRef.set(syncData, com.google.firebase.firestore.SetOptions.merge())
+            }
+        }
+    }
+
     // FETCH REAL USERS & PRESENCE (100% Logic)
     var allRealUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
             val userRef = db.collection("users").document(firebaseUid!!)
-            
-            // Mark current user as online
-            val selfUpdate = hashMapOf(
-                "uid" to firebaseUid,
-                "email" to (auth.currentUser?.email ?: ""),
-                "isOnline" to true,
-                "lastSeen" to com.google.firebase.Timestamp.now()
-            )
-            userRef.set(selfUpdate, com.google.firebase.firestore.SetOptions.merge())
-
             val listener = db.collection("users").addSnapshotListener { snapshots, error ->
-                if (error != null) return@addSnapshotListener
+                if (error != null) {
+                    if (error.message?.contains("permission", true) == true) {
+                        Toast.makeText(context, "Search restricted: Use exact search.", Toast.LENGTH_SHORT).show()
+                    }
+                    return@addSnapshotListener
+                }
                 val users = snapshots?.documents?.mapNotNull { doc ->
                     val uid = doc.id
                     val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
@@ -580,72 +593,65 @@ private fun ChatsPage(
     allRealUsers: List<RealUser> = emptyList(),
     onOpenMedia: (LocalChatMessage) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val db = remember { com.google.firebase.firestore.FirebaseFirestore.getInstance() }
     var remoteUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
 
     // 1. DEBOUNCED UNIVERSAL SEARCH ENGINE (Professional Grade)
     LaunchedEffect(search) {
-        val query = search.trim().lowercase()
+        val queryRaw = search.trim()
+        val query = queryRaw.lowercase()
         if (query.isEmpty()) {
             remoteUsers = emptyList()
             isSearching = false
             return@LaunchedEffect
         }
         
-        // Debounce: Wait 400ms for stable input
-        kotlinx.coroutines.delay(400)
+        // Debounce: Wait 500ms
+        kotlinx.coroutines.delay(500)
         isSearching = true
         
         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
 
-        // Build multiple discovery tasks to overcome Firestore query limitations
+        // DISCOVERY ENGINE
         val tasks = mutableListOf<com.google.android.gms.tasks.Task<com.google.firebase.firestore.QuerySnapshot>>()
         
-        // Exact Search (Highest Precision)
+        // Exact Search - Lowercase (Recommended)
         tasks.add(db.collection("users").whereEqualTo("email", query).get())
         tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
-        tasks.add(db.collection("users").whereEqualTo("phone", query).get())
         
-        // Prefix/Fuzzy Search (Broad Discovery - Handles "baby" finding "babyshyna")
-        if (query.length >= 2) {
-            // Note: These require single-field indexes in Firestore
-            tasks.add(db.collection("users").orderBy("customUid").startAt(query).endAt(query + "\uf8ff").limit(20).get())
-            tasks.add(db.collection("users").orderBy("email").startAt(query).endAt(query + "\uf8ff").limit(20).get())
-            tasks.add(db.collection("users").orderBy("name").startAt(query).endAt(query + "\uf8ff").limit(20).get())
+        // Exact Search - Raw (Legacy Support)
+        if (queryRaw != query) {
+            tasks.add(db.collection("users").whereEqualTo("email", queryRaw).get())
         }
 
-        var foundCount = 0
         tasks.forEach { task ->
             task.addOnSuccessListener { snap ->
                 val found = snap.documents.mapNotNull { doc ->
                     val uid = doc.id
-                    // Never show self in search results
                     if (uid == currentUid) return@mapNotNull null
                     
-                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: "User"
                     val email = doc.getString("email") ?: ""
-                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
                     val cUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
                     
                     RealUser(uid, name, email, phone, online, cUid)
                 }
-                if (found.isNotEmpty()) {
-                    foundCount += found.size
-                    remoteUsers = (remoteUsers + found).distinctBy { it.uid }
+                remoteUsers = (remoteUsers + found).distinctBy { it.uid }
+            }.addOnFailureListener { e ->
+                // Silently ignore prefix index errors, but log permission issues
+                if (e.message?.contains("permission", true) == true) {
+                    Toast.makeText(context, "Search restricted: Check Firestore rules", Toast.LENGTH_SHORT).show()
                 }
-            }.addOnFailureListener {
-                // If a query fails (likely due to missing index), we ignore it and continue
             }.addOnCompleteListener {
-                if (tasks.all { it.isComplete }) {
-                    isSearching = false
-                }
+                if (tasks.all { it.isComplete }) isSearching = false
             }
         }
         
-        // Safety timeout: If tasks take too long, hide loader
-        kotlinx.coroutines.delay(6000)
+        kotlinx.coroutines.delay(5000)
         isSearching = false
     }
 
