@@ -111,7 +111,7 @@ private val LinkChipBg = Color(0xFFEFF2F5)
 private val LinkChipSelected = Color(0xFFE7FCE3)
 private val LinkChipSelectedText = Color(0xFF008069)
 
-private data class RealUser(val uid: String, val name: String, val email: String, val isOnline: Boolean = false)
+private data class RealUser(val uid: String, val name: String, val email: String, val phone: String = "", val isOnline: Boolean = false)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,33 +121,36 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     val db = remember { com.google.firebase.firestore.FirebaseFirestore.getInstance() }
     var firebaseUid by remember { mutableStateOf(auth.currentUser?.uid) }
     
-    // FETCH REAL USERS & PRESENCE
+    // FETCH REAL USERS & PRESENCE (100% Logic)
     var allRealUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
-            // Register/Update current user presence
             val userRef = db.collection("users").document(firebaseUid!!)
-            val update = hashMapOf(
+            
+            // Mark current user as online
+            val selfUpdate = hashMapOf(
                 "uid" to firebaseUid,
                 "email" to (auth.currentUser?.email ?: ""),
                 "isOnline" to true,
                 "lastSeen" to com.google.firebase.Timestamp.now()
             )
-            userRef.set(update, com.google.firebase.firestore.SetOptions.merge())
-            
-            val listener = db.collection("users").addSnapshotListener { snapshots, _ ->
+            userRef.set(selfUpdate, com.google.firebase.firestore.SetOptions.merge())
+
+            val listener = db.collection("users").addSnapshotListener { snapshots, error ->
+                if (error != null) return@addSnapshotListener
                 val users = snapshots?.documents?.mapNotNull { doc ->
-                    val uid = doc.getString("uid") ?: ""
-                    val name = doc.getString("name") ?: doc.getString("email")?.substringBefore("@") ?: "User"
+                    val uid = doc.id
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
+                    val email = doc.getString("email") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
-                    if (uid != firebaseUid) RealUser(uid, name, doc.getString("email") ?: "", online) else null
+                    if (uid != firebaseUid) RealUser(uid, name, email, phone, online) else null
                 } ?: emptyList()
                 allRealUsers = users
             }
             
             onDispose {
-                // Mark offline on dispose
-                db.collection("users").document(firebaseUid!!).update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
+                userRef.update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
                 listener.remove()
             }
         } else {
@@ -306,6 +309,11 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                                 innerTextField()
                             }
                         )
+                        if (search.isNotEmpty()) {
+                            IconButton(onClick = { search = "" }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Outlined.Close, null, tint = LinkMuted)
+                            }
+                        }
                     }
                 }
 
@@ -565,67 +573,136 @@ private fun ChatsPage(
     onOpenMedia: (LocalChatMessage) -> Unit = {}
 ) {
     val activeUsers = remember(messages.size, search, allRealUsers) {
-        // 1. Get UIDs/Names from message history
-        val chattedIdentities = messages.map { it.peerName }.toSet()
+        val cleanSearch = search.lowercase().trim().replace(" ", "")
         
-        // 2. Map chatted users to their real profiles if available
-        val chattedItems = chattedIdentities.mapNotNull { identity ->
-            val lastMsg = messages.filter { it.peerName == identity }.maxByOrNull { it.time }
-            val realProfile = allRealUsers.find { it.uid == identity || it.name == identity }
+        fun userMatches(displayName: String, profile: RealUser?): Boolean {
+            if (cleanSearch.isBlank()) return true
             
-            // Filter: If it's a dummy user (no real profile and no real UID), skip it
-            if (realProfile == null && identity.length < 10) return@mapNotNull null 
+            // Match Name (Babulal Jat -> babulaljat)
+            if (displayName.lowercase().replace(" ", "").contains(cleanSearch)) return true
             
-            val displayName = realProfile?.name ?: identity
-            val isOnline = realProfile?.isOnline ?: false
-            val match = displayName.contains(search, true) || realProfile?.email?.contains(search, true) == true
-            ChatRowItem(identity, displayName, lastMsg, isOnline, match)
+            // Match Email
+            if (profile?.email?.lowercase()?.contains(cleanSearch) == true) return true
+            
+            // Match Phone (Ignores +, spaces, dashes)
+            val cleanPhone = profile?.phone?.replace(Regex("[^0-9]"), "") ?: ""
+            val cleanQuery = cleanSearch.replace(Regex("[^0-9]"), "")
+            if (cleanQuery.isNotEmpty() && cleanPhone.contains(cleanQuery)) return true
+            
+            // Match User ID (Partial UID)
+            if (profile?.uid?.lowercase()?.contains(cleanSearch) == true) return true
+            
+            return false
         }
 
-        // 3. Add real users from search results who aren't in history
-        val searchItems = if (search.isNotBlank()) {
-            allRealUsers
-                .filter { user -> 
-                    user.uid !in chattedIdentities && user.name !in chattedIdentities &&
-                    (user.name.contains(search, true) || user.email.contains(search, true)) 
-                }
-                .map { user -> ChatRowItem(user.uid, user.name, null, user.isOnline, true) }
-        } else emptyList()
+        // 1. Get all unique peers from history
+        val chattedUids = messages.map { it.peerName }.toSet()
+        
+        // 2. Map chatted users (Prioritize real profiles)
+        val chattedItems = chattedUids.mapNotNull { uid ->
+            val lastMsg = messages.filter { it.peerName == uid }.maxByOrNull { it.time }
+            val realProfile = allRealUsers.find { it.uid == uid || it.name == uid }
+            
+            // Filter out system/dummy messages without valid identities
+            if (realProfile == null && uid.length < 10) return@mapNotNull null 
+            
+            val displayName = realProfile?.name ?: uid
+            val isOnline = realProfile?.isOnline ?: false
+            val match = userMatches(displayName, realProfile)
+            
+            ChatRowItem(uid, displayName, lastMsg, isOnline, match)
+        }
 
-        (chattedItems + searchItems)
-            .filter { it.matchSearch || search.isBlank() }
-            .sortedByDescending { it.lastMessage?.time ?: 0L }
+        // 3. Show other users from directory (even if no chat yet)
+        val directoryItems = allRealUsers
+            .filter { user -> user.uid !in chattedUids && user.name !in chattedUids }
+            .map { user ->
+                ChatRowItem(user.uid, user.name, null, user.isOnline, userMatches(user.name, user))
+            }
+
+        // 4. Combine: If searching, show both. If not, show History + some Suggested
+        val result = if (cleanSearch.isNotBlank()) {
+            (chattedItems + directoryItems).filter { it.matchSearch }
+        } else {
+            // If search is blank, show history + all others (since there are only 2 users total)
+            (chattedItems + directoryItems)
+        }
+
+        result.sortedByDescending { it.lastMessage?.time ?: 0L }
     }
 
     LazyColumn(
         Modifier.fillMaxSize().background(LinkBg), 
         contentPadding = PaddingValues(top = 8.dp)
     ) {
-        items(activeUsers) { item ->
-            WhatsAppContactRow(
-                name = item.name, 
-                preview = item.lastMessage?.let { if (it.mine) "You: ${it.text}" else it.text } ?: "Start chatting...", 
-                icon = when(item.lastMessage?.type) {
-                    MessageType.IMAGE -> Icons.Outlined.Image
-                    MessageType.VIDEO -> Icons.Outlined.Videocam
-                    MessageType.VOICE -> Icons.Outlined.Mic
-                    MessageType.FILE -> Icons.Outlined.AttachFile
-                    else -> Icons.Outlined.Chat
-                },
-                date = item.lastMessage?.let { remember(it.time) { SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(it.time)) } } ?: "",
-                online = item.isOnline,
-                onClick = { onOpenChat(item.id) }
-            )
+        val history = activeUsers.filter { it.lastMessage != null }
+        val others = activeUsers.filter { it.lastMessage == null }
+
+        if (history.isNotEmpty()) {
+            if (search.isNotBlank()) item { ListHeader("Chat History") }
+            items(history) { item ->
+                WhatsAppContactRow(
+                    name = item.name, 
+                    preview = item.lastMessage?.let { if (it.mine) "You: ${it.text}" else it.text } ?: "", 
+                    icon = getIconForType(item.lastMessage?.type),
+                    date = formatDate(item.lastMessage?.time),
+                    online = item.isOnline,
+                    onClick = { onOpenChat(item.id) }
+                )
+            }
+        }
+
+        if (others.isNotEmpty()) {
+            item { ListHeader(if (search.isNotBlank()) "Other Users Found" else "Suggested Contacts") }
+            items(others) { item ->
+                WhatsAppContactRow(
+                    name = item.name, 
+                    preview = "Start a new conversation", 
+                    icon = Icons.Outlined.PersonAdd,
+                    date = "",
+                    online = item.isOnline,
+                    onClick = { onOpenChat(item.id) }
+                )
+            }
         }
         
-        if (activeUsers.isEmpty() && search.isBlank()) {
+        if (activeUsers.isEmpty()) {
             item {
                 Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    Text("No active chats yet. Start a new conversation!", color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    val emptyText = if (search.isBlank()) 
+                        "No users online right now." 
+                    else 
+                        "No users found matching '$search'"
+                    Text(emptyText, color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ListHeader(title: String) {
+    Text(
+        text = title,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        color = LinkChipSelectedText,
+        letterSpacing = 1.sp
+    )
+}
+
+private fun getIconForType(type: MessageType?): ImageVector = when(type) {
+    MessageType.IMAGE -> Icons.Outlined.Image
+    MessageType.VIDEO -> Icons.Outlined.Videocam
+    MessageType.VOICE -> Icons.Outlined.Mic
+    MessageType.FILE -> Icons.Outlined.AttachFile
+    else -> Icons.Outlined.Chat
+}
+
+private fun formatDate(time: Long?): String {
+    if (time == null || time == 0L) return ""
+    return SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(time))
 }
 
 private data class ChatRowItem(
