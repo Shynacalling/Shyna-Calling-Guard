@@ -614,16 +614,19 @@ private fun ChatsPage(
         
         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
 
-        // DISCOVERY ENGINE
+        // DISCOVERY ENGINE - firing multiple parallel queries to maximize discovery
         val tasks = mutableListOf<com.google.android.gms.tasks.Task<com.google.firebase.firestore.QuerySnapshot>>()
         
-        // Exact Search - Lowercase (Recommended)
+        // Exact Search
         tasks.add(db.collection("users").whereEqualTo("email", query).get())
         tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
+        tasks.add(db.collection("users").whereEqualTo("phone", queryRaw).get())
         
-        // Exact Search - Raw (Legacy Support)
-        if (queryRaw != query) {
-            tasks.add(db.collection("users").whereEqualTo("email", queryRaw).get())
+        // Prefix Search (Discovery)
+        if (query.length >= 3) {
+            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("email", query).whereLessThanOrEqualTo("email", query + "\uf8ff").limit(10).get())
+            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("customUid", query).whereLessThanOrEqualTo("customUid", query + "\uf8ff").limit(10).get())
+            tasks.add(db.collection("users").whereGreaterThanOrEqualTo("name", queryRaw).whereLessThanOrEqualTo("name", queryRaw + "\uf8ff").limit(10).get())
         }
 
         tasks.forEach { task ->
@@ -632,9 +635,9 @@ private fun ChatsPage(
                     val uid = doc.id
                     if (uid == currentUid) return@mapNotNull null
                     
-                    val name = doc.getString("name") ?: doc.getString("displayName") ?: "User"
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
                     val email = doc.getString("email") ?: ""
-                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
                     val cUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
                     
@@ -642,12 +645,28 @@ private fun ChatsPage(
                 }
                 remoteUsers = (remoteUsers + found).distinctBy { it.uid }
             }.addOnFailureListener { e ->
-                // Silently ignore prefix index errors, but log permission issues
                 if (e.message?.contains("permission", true) == true) {
                     Toast.makeText(context, "Search restricted: Check Firestore rules", Toast.LENGTH_SHORT).show()
                 }
             }.addOnCompleteListener {
                 if (tasks.all { it.isComplete }) isSearching = false
+            }
+        }
+        
+        // Final fallback: if exact UID is provided
+        if (query.length > 20) {
+            db.collection("users").document(queryRaw).get().addOnSuccessListener { doc ->
+                if (doc.exists() && doc.id != currentUid) {
+                    val user = RealUser(
+                        uid = doc.id,
+                        name = doc.getString("name") ?: "User",
+                        email = doc.getString("email") ?: "",
+                        phone = doc.getString("phone") ?: "",
+                        isOnline = doc.getBoolean("isOnline") ?: false,
+                        customUid = doc.getString("customUid") ?: ""
+                    )
+                    remoteUsers = (remoteUsers + user).distinctBy { it.uid }
+                }
             }
         }
         
