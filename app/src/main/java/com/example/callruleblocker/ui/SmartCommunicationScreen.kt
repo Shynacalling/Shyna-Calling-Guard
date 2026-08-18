@@ -491,6 +491,7 @@ private fun CallsPage(
 }
 
 @Composable private fun ChatBubble(message: LocalChatMessage) {
+    val context = LocalContext.current
     val scale by animateFloatAsState(
         targetValue = 1f,
         animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
@@ -512,7 +513,16 @@ private fun CallsPage(
                     shape = RoundedCornerShape(12.dp),
                     color = Color.DarkGray,
                     border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF00E676)),
-                    modifier = Modifier.width(260.dp).clickable { /* Open Map logic here if needed */ }
+                    modifier = Modifier.width(260.dp).clickable { 
+                        try {
+                            val gmmIntentUri = Uri.parse("geo:$lat,$lng?q=$lat,$lng(Location)")
+                            val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
+                            mapIntent.setPackage("com.google.android.apps.maps")
+                            context.startActivity(mapIntent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Google Maps not found", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 ) {
                     Box {
                         GoogleMap(
@@ -538,7 +548,18 @@ private fun CallsPage(
                 }
             }
             MessageType.FILE -> {
-                Surface(shape = RoundedCornerShape(16.dp), color = Color(0xFF242424), modifier = Modifier.width(240.dp)) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp), 
+                    color = Color(0xFF242424), 
+                    modifier = Modifier.width(240.dp).clickable {
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(message.metadata))
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Cannot open file", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = RoundedCornerShape(8.dp), color = Color.DarkGray, modifier = Modifier.size(40.dp)) {
                             Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Description, null, tint = Color.LightGray) }
@@ -753,7 +774,6 @@ private fun SmartChatDetailScreen(peer: String, prefs: android.content.SharedPre
                                             }
                                             recordingTime = 0
                                         } else {
-                                            // Simulated voice command trigger
                                             val file = File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a")
                                             audioFile = file
                                             audioRecorder.start(file)
@@ -840,7 +860,6 @@ private fun SmartChatDetailScreen(peer: String, prefs: android.content.SharedPre
         ChatTool.GALLERY -> GalleryPickerScreen(
             onBack = { activeTool = ChatTool.NONE },
             onItemsSelected = { selected ->
-                // Simulate sending selected items
                 selected.forEach { 
                     messages = messages + LocalChatMessage("Image", true, System.currentTimeMillis(), MessageType.FILE, it)
                 }
