@@ -584,7 +584,7 @@ private fun ChatsPage(
     var remoteUsers by remember { mutableStateOf<List<RealUser>>(emptyList()) }
     var isSearching by remember { mutableStateOf(false) }
 
-    // 1. DEBOUNCED UNIVERSAL SEARCH ENGINE
+    // 1. DEBOUNCED UNIVERSAL SEARCH ENGINE (Professional Grade)
     LaunchedEffect(search) {
         val query = search.trim().lowercase()
         if (query.isEmpty()) {
@@ -593,42 +593,50 @@ private fun ChatsPage(
             return@LaunchedEffect
         }
         
-        // Debounce: Wait 500ms after last keystroke
-        kotlinx.coroutines.delay(500)
+        // Debounce: Wait 400ms for stable input
+        kotlinx.coroutines.delay(400)
         isSearching = true
         
         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
 
-        // Build search tasks
+        // Build multiple discovery tasks to overcome Firestore query limitations
         val tasks = mutableListOf<com.google.android.gms.tasks.Task<com.google.firebase.firestore.QuerySnapshot>>()
         
-        // Exact matches
+        // Exact Search (Highest Precision)
         tasks.add(db.collection("users").whereEqualTo("email", query).get())
         tasks.add(db.collection("users").whereEqualTo("customUid", query).get())
+        tasks.add(db.collection("users").whereEqualTo("phone", query).get())
         
-        // Prefix matches (Handles "baby" finding "babyshyna")
+        // Prefix/Fuzzy Search (Broad Discovery - Handles "baby" finding "babyshyna")
         if (query.length >= 2) {
+            // Note: These require single-field indexes in Firestore
             tasks.add(db.collection("users").orderBy("customUid").startAt(query).endAt(query + "\uf8ff").limit(20).get())
             tasks.add(db.collection("users").orderBy("email").startAt(query).endAt(query + "\uf8ff").limit(20).get())
             tasks.add(db.collection("users").orderBy("name").startAt(query).endAt(query + "\uf8ff").limit(20).get())
         }
 
+        var foundCount = 0
         tasks.forEach { task ->
             task.addOnSuccessListener { snap ->
                 val found = snap.documents.mapNotNull { doc ->
                     val uid = doc.id
+                    // Never show self in search results
                     if (uid == currentUid) return@mapNotNull null
                     
-                    val name = doc.getString("name") ?: doc.getString("displayName") ?: "User"
+                    val name = doc.getString("name") ?: doc.getString("displayName") ?: doc.getString("email")?.substringBefore("@") ?: "User"
                     val email = doc.getString("email") ?: ""
-                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: ""
+                    val phone = doc.getString("phone") ?: doc.getString("mobile") ?: doc.getString("phoneNumber") ?: ""
                     val cUid = doc.getString("customUid") ?: ""
                     val online = doc.getBoolean("isOnline") ?: false
                     
                     RealUser(uid, name, email, phone, online, cUid)
                 }
-                // Merge without duplicates
-                remoteUsers = (remoteUsers + found).distinctBy { it.uid }
+                if (found.isNotEmpty()) {
+                    foundCount += found.size
+                    remoteUsers = (remoteUsers + found).distinctBy { it.uid }
+                }
+            }.addOnFailureListener {
+                // If a query fails (likely due to missing index), we ignore it and continue
             }.addOnCompleteListener {
                 if (tasks.all { it.isComplete }) {
                     isSearching = false
@@ -636,8 +644,8 @@ private fun ChatsPage(
             }
         }
         
-        // Fallback safety timeout
-        kotlinx.coroutines.delay(5000)
+        // Safety timeout: If tasks take too long, hide loader
+        kotlinx.coroutines.delay(6000)
         isSearching = false
     }
 
@@ -648,12 +656,14 @@ private fun ChatsPage(
         val items = allKnown.map { user ->
             val lastMsg = messages.filter { it.peerName == user.uid || it.peerName == user.customUid || it.peerName == user.email }.maxByOrNull { it.time }
             
-            // DEEP MATCHING (Handles "shyna" in "babyshyna")
+            // 100% DEEP LOGIC MATCHING
+            // We check every field locally as well to ensure results are accurate
             val match = query.isEmpty() || 
                         user.name.lowercase().contains(query) || 
                         user.email.lowercase().contains(query) || 
                         user.customUid.lowercase().contains(query) || 
-                        user.phone.replace(Regex("[^0-9]"), "").contains(query.replace(Regex("[^0-9]"), ""))
+                        user.phone.replace(Regex("[^0-9]"), "").contains(query.replace(Regex("[^0-9]"), "")) ||
+                        user.uid.lowercase() == query
 
             ChatRowItem(
                 id = user.uid,
