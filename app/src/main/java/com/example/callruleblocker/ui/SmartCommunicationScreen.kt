@@ -191,6 +191,19 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                 }
                 
                 userRef.set(syncData, SetOptions.merge())
+            }.addOnFailureListener { e ->
+                Log.e(TAG, "Profile sync failed (Read): ${e.message}")
+                // Try writing anyway if it's a new database
+                val syncData = hashMapOf(
+                    "uid" to firebaseUid!!,
+                    "email" to currentEmail,
+                    "normalizedEmail" to normalizedEmail,
+                    "name" to (user?.displayName ?: currentEmail.substringBefore("@")),
+                    "isOnline" to true,
+                    "updatedAt" to Timestamp.now()
+                )
+                userRef.set(syncData, SetOptions.merge())
+                    .addOnFailureListener { Log.e(TAG, "Profile sync failed (Write): ${it.message}") }
             }
         }
     }
@@ -204,23 +217,18 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
             isLoadingUsers = true
             Log.d(TAG, "Fetching users from Firestore. Project: ${db.app.options.projectId}")
             val listener = db.collection("users")
-                .limit(200) 
+                .limit(500) 
                 .addSnapshotListener { snapshots, error ->
                     isLoadingUsers = false
                     if (error != null) {
                         Log.e(TAG, "Firestore error: ${error.message}", error)
+                        Toast.makeText(context, "Search unavailable: ${error.code}", Toast.LENGTH_SHORT).show()
                         return@addSnapshotListener
                     }
                     val users = snapshots?.documents?.mapNotNull { doc ->
                         val uid = doc.id
                         val email = doc.getString("email") ?: ""
-                        val normEmail = doc.getString("normalizedEmail") ?: email.trim().lowercase()
                         val name = doc.getString("name") ?: doc.getString("displayName") ?: email.substringBefore("@")
-                        val phone = doc.getString("phone") ?: ""
-                        val normPhone = doc.getString("normalizedPhone") ?: phone.replace(Regex("[^0-9+]"), "")
-                        val cUid = doc.getString("customUid") ?: ""
-                        val online = doc.getBoolean("isOnline") ?: false
-                        val photoUrl = doc.getString("photoUrl")
                         
                         RealUser(
                             uid = uid, 
@@ -228,12 +236,12 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                             firstName = doc.getString("firstName") ?: "",
                             lastName = doc.getString("lastName") ?: "",
                             email = email, 
-                            phone = phone, 
-                            normalizedPhone = normPhone, 
-                            normalizedEmail = normEmail, 
-                            isOnline = online, 
-                            customUid = cUid, 
-                            photoUrl = photoUrl,
+                            phone = doc.getString("phone") ?: "", 
+                            normalizedPhone = doc.getString("normalizedPhone") ?: "", 
+                            normalizedEmail = doc.getString("normalizedEmail") ?: email.trim().lowercase(), 
+                            isOnline = doc.getBoolean("isOnline") ?: false, 
+                            customUid = doc.getString("customUid") ?: "", 
+                            photoUrl = doc.getString("photoUrl"),
                             dob = doc.getLong("dob"),
                             age = doc.getLong("age")?.toInt(),
                             pincode = doc.getString("pincode") ?: "",
@@ -243,7 +251,7 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                         )
                     } ?: emptyList()
                     
-                    Log.d(TAG, "Loaded ${users.size} users from Firestore")
+                    Log.d(TAG, "Successfully loaded ${users.size} users from Firestore")
                     allRealUsers = users
                 }
             
@@ -275,11 +283,12 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
 
     var showContactPicker by remember { mutableStateOf(false) }
 
-    var userId by remember { mutableStateOf(prefs.getString("user_id", firebaseUid ?: "") ?: "") }
     var internetReady by remember { mutableStateOf(hasInternet(context)) }
     var message by remember { mutableStateOf("") }
     var selectedPeer by remember { mutableStateOf<String?>(null) }
     var locationTargetPeer by remember { mutableStateOf<String?>(null) }
+
+    val currentUserId = firebaseUid ?: ""
     
     // NEW: FETCH ACTIVE CHATS FROM FIRESTORE (Robust OR Query)
     val allMessages = remember { mutableStateListOf<LocalChatMessage>() }
@@ -322,9 +331,9 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
             onBack = { locationTargetPeer = null },
             onSendLocation = { loc ->
                 val peerId = locationTargetPeer!!
-                val chatId = if (userId < peerId) "${userId}_${peerId}" else "${peerId}_${userId}"
+                val chatId = if (currentUserId < peerId) "${currentUserId}_${peerId}" else "${peerId}_${currentUserId}"
                 val message = hashMapOf(
-                    "senderId" to userId,
+                    "senderId" to currentUserId,
                     "receiverId" to peerId,
                     "text" to "📍 Shared Location",
                     "type" to MessageType.LOCATION.name,
@@ -332,8 +341,8 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     "timestamp" to com.google.firebase.Timestamp.now()
                 )
                 val chatUpdate = hashMapOf(
-                    "user1" to if (userId < peerId) userId else peerId,
-                    "user2" to if (userId < peerId) userId else peerId,
+                    "user1" to if (currentUserId < peerId) currentUserId else peerId,
+                    "user2" to if (currentUserId < peerId) peerId else currentUserId,
                     "lastMessage" to "📍 Location",
                     "type" to MessageType.LOCATION.name,
                     "timestamp" to com.google.firebase.Timestamp.now()
@@ -351,7 +360,7 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         SmartChatDetailScreen(
             peerId = selectedPeer!!, 
             prefs = prefs, 
-            userId = userId, 
+            userId = currentUserId, 
             allMessages = allMessages, 
             allRealUsers = allRealUsers,
             onBack = { selectedPeer = null },
@@ -451,7 +460,9 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                         search = search,
                         onOpenChat = { selectedPeer = it },
                         allRealUsers = allRealUsers,
-                        onOpenMedia = { fullScreenMedia = it }
+                        onOpenMedia = { fullScreenMedia = it },
+                        currentUid = currentUserId,
+                        isLoading = isLoadingUsers
                     )
                     LinkTab.YOU -> YouPage(
                         currentUser = allRealUsers.find { it.uid == firebaseUid } ?: RealUser(
@@ -539,27 +550,25 @@ private fun ChatsPage(
     search: String, 
     onOpenChat: (String) -> Unit,
     allRealUsers: List<RealUser> = emptyList(),
-    onOpenMedia: (LocalChatMessage) -> Unit = {}
+    onOpenMedia: (LocalChatMessage) -> Unit = {},
+    currentUid: String = "",
+    isLoading: Boolean = false
 ) {
     val displayList = remember(messages.size, search, allRealUsers) {
         val rawQuery = search.trim()
-        val query = rawQuery.lowercase().replace(" ", "")
+        val query = rawQuery.lowercase()
         
         val items = allRealUsers.map { user ->
-            val lastMsg = messages.filter { it.peerName == user.uid }.maxByOrNull { it.time }
+            val lastMsg = messages.find { it.peerName == user.uid }
             
-            // ROBUST MATCHING: Name, Email, Phone, CustomID, UID
-            val nameClean = user.name.lowercase().replace(" ", "")
-            val emailClean = user.normalizedEmail
-            val phoneClean = user.normalizedPhone
-            val idClean = user.customUid.lowercase()
+            // ROBUST MATCHING
+            val nameMatch = user.name.lowercase().contains(query)
+            val emailMatch = user.email.lowercase().contains(query)
+            val phoneMatch = user.phone.contains(query)
+            val idMatch = user.customUid.lowercase().contains(query)
+            val uidMatch = user.uid.lowercase() == query
             
-            val match = query.isEmpty() || 
-                        nameClean.contains(query) || 
-                        emailClean.contains(query) || 
-                        phoneClean.contains(query) || 
-                        idClean.contains(query) ||
-                        user.uid.lowercase() == query.lowercase()
+            val match = query.isEmpty() || nameMatch || emailMatch || phoneMatch || idMatch || uidMatch
 
             ChatRowItem(
                 id = user.uid,
@@ -572,11 +581,9 @@ private fun ChatsPage(
         }
 
         if (rawQuery.isEmpty()) {
-            // Home: Only show people you have already chatted with
             items.filter { it.lastMessage != null }.sortedByDescending { it.lastMessage?.time ?: 0L }
         } else {
-            // Search: Show all matching users including self
-            items.filter { it.matchSearch }.sortedByDescending { it.lastMessage?.time ?: 0L }
+            items.filter { it.matchSearch }
         }
     }
 
@@ -596,9 +603,9 @@ private fun ChatsPage(
             }
             if (displayList.isEmpty() && allRealUsers.isNotEmpty()) {
                 item { ListHeader("Suggested for you") }
-                items(allRealUsers.take(10)) { user ->
+                items(allRealUsers.take(15)) { user ->
                     ShynaContactRow(
-                        name = user.name,
+                        name = user.name + (if(user.uid == currentUid) " (You)" else ""),
                         subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
                         preview = if (user.isOnline) "Active now" else "Start a new chat",
                         icon = Icons.Outlined.Person,
@@ -606,6 +613,14 @@ private fun ChatsPage(
                         online = user.isOnline,
                         onClick = { onOpenChat(user.uid) }
                     )
+                }
+            } else if (allRealUsers.isEmpty() && !isLoading) {
+                item {
+                    Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Outlined.CloudOff, null, Modifier.size(48.dp), tint = LinkMuted)
+                        Spacer(Modifier.height(12.dp))
+                        Text("No Shyna users found on server.\nCheck your Firestore Rules.", color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontSize = 14.sp)
+                    }
                 }
             }
         } else {
@@ -890,20 +905,6 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                             modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
                         )
                     } else {
-                        if (isGoogleConfirmationMode) {
-                        Text(
-                            text = "Complete Profile",
-                            fontSize = 26.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        Text(
-                            text = "Confirm these details to finish linking your Google account",
-                            fontSize = 13.sp,
-                            color = Color.White.copy(alpha = 0.5f),
-                            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
-                        )
-                    } else {
                         Crossfade(targetState = isSignUp, label = "auth_mode") { signup ->
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
@@ -920,7 +921,6 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                 )
                             }
                         }
-                    }
                     }
 
                     if (isSignUp || isGoogleConfirmationMode) {
@@ -2035,7 +2035,17 @@ private fun SmartChatDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 items(chatMessages) { msg ->
-                    ShynaMessageBubble(msg)
+                    ShynaMessageBubble(
+                        msg = msg,
+                        onLocationClick = { 
+                            // Open in Maps
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))
+                            context.startActivity(intent)
+                        },
+                        onContactClick = { contactUid ->
+                            // Open chat with this contact or profile
+                        }
+                    )
                 }
             }
         }
@@ -2071,7 +2081,7 @@ private fun SmartChatDetailScreen(
 }
 
 @Composable
-private fun ShynaMessageBubble(msg: LocalChatMessage) {
+private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) -> Unit = {}, onContactClick: (String) -> Unit = {}) {
     val alignment = if (msg.mine) Alignment.End else Alignment.Start
     val color = if (msg.mine) Color(0xFFD9FDD3) else Color.White
     val shape = RoundedCornerShape(
@@ -2086,7 +2096,10 @@ private fun ShynaMessageBubble(msg: LocalChatMessage) {
             color = color,
             shape = shape,
             shadowElevation = 1.dp,
-            modifier = Modifier.widthIn(max = 300.dp)
+            modifier = Modifier.widthIn(max = 300.dp).clickable { 
+                if (msg.type == MessageType.LOCATION) onLocationClick(msg.metadata ?: "")
+                if (msg.type == MessageType.CONTACT) onContactClick(msg.metadata ?: "")
+            }
         ) {
             Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                 when(msg.type) {
