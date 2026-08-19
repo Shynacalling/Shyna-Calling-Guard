@@ -9,7 +9,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import androidx.core.content.ContextCompat
-import android.provider.Settings
+import android.provider.ContactsContract
+import androidx.compose.ui.platform.LocalConfiguration
 import android.os.Build
 import android.widget.Toast
 import android.util.Log
@@ -65,7 +66,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.ui.layout.ContentScale
 import coil.compose.AsyncImage
 import com.google.android.gms.maps.model.CameraPosition
@@ -86,6 +88,10 @@ import java.util.Locale
 import java.util.Calendar
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.firebase.auth.GoogleAuthProvider
 
 private const val TAG = "ShynaDiscovery"
 private const val COMM_PREFS = "smart_communication_v2"
@@ -153,6 +159,20 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
     var firebaseUid by remember { mutableStateOf(auth.currentUser?.uid) }
+    var isForceSetup by remember { mutableStateOf(false) }
+
+    // Check if profile setup is required for the current user
+    LaunchedEffect(firebaseUid) {
+        if (firebaseUid != null) {
+            db.collection("users").document(firebaseUid!!).get().addOnSuccessListener { doc ->
+                if (!doc.exists() || doc.getString("customUid").isNullOrBlank()) {
+                    isForceSetup = true
+                } else {
+                    isForceSetup = false
+                }
+            }
+        }
+    }
     
     // ENSURE PROFILE SYNC (Final Foolproof implementation)
     LaunchedEffect(firebaseUid) {
@@ -349,10 +369,13 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         return
     }
 
-    if (firebaseUid == null) {
+    if (firebaseUid == null || isForceSetup) {
         ShynaAuthScreen(
             onBack = onBack,
-            onLoginSuccess = { /* firebaseUid will update via listener */ }
+            onLoginSuccess = { 
+                isForceSetup = false
+                firebaseUid = auth.currentUser?.uid 
+            }
         )
         return
     }
@@ -474,6 +497,7 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                                 icon = Icons.Outlined.Person,
                                 date = "",
                                 online = user.isOnline,
+                                photoUrl = user.photoUrl,
                                 onClick = {
                                     selectedPeer = user.uid
                                     showContactPicker = false
@@ -551,7 +575,8 @@ private fun ChatsPage(
                 lastMessage = lastMsg,
                 isOnline = user.isOnline,
                 matchSearch = match,
-                subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email
+                subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
+                photoUrl = user.photoUrl
             )
         }
 
@@ -573,6 +598,7 @@ private fun ChatsPage(
                     icon = getIconForType(item.lastMessage?.type),
                     date = formatDate(item.lastMessage?.time),
                     online = item.isOnline,
+                    photoUrl = item.photoUrl,
                     onClick = { onOpenChat(item.id) }
                 )
             }
@@ -586,6 +612,7 @@ private fun ChatsPage(
                         icon = Icons.Outlined.Person,
                         date = "",
                         online = user.isOnline,
+                        photoUrl = user.photoUrl,
                         onClick = { onOpenChat(user.uid) }
                     )
                 }
@@ -609,6 +636,7 @@ private fun ChatsPage(
                         icon = if (item.lastMessage == null) Icons.Outlined.PersonSearch else getIconForType(item.lastMessage?.type),
                         date = formatDate(item.lastMessage?.time),
                         online = item.isOnline,
+                        photoUrl = item.photoUrl,
                         onClick = { onOpenChat(item.id) }
                     )
                 }
@@ -626,11 +654,15 @@ private fun ChatsPage(
 }
 
 @Composable
-private fun ShynaContactRow(name: String, subtitle: String = "", preview: String, icon: ImageVector, date: String, online: Boolean = false, onClick: () -> Unit) {
+private fun ShynaContactRow(name: String, subtitle: String = "", preview: String, icon: ImageVector, date: String, online: Boolean = false, photoUrl: String? = null, onClick: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box {
             Surface(shape = CircleShape, color = Color(0xFFE1E4E7), modifier = Modifier.size(56.dp)) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Person, null, tint = Color.Gray, modifier = Modifier.size(32.dp)) }
+                if (photoUrl != null) {
+                    AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                } else {
+                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Person, null, tint = Color.Gray, modifier = Modifier.size(32.dp)) }
+                }
             }
             if (online) {
                 Box(modifier = Modifier.size(14.dp).align(Alignment.BottomEnd).background(Color.White, CircleShape).padding(2.dp)) {
@@ -697,7 +729,7 @@ private fun hasInternet(context: Context): Boolean {
 
 @Composable private fun MenuItem(text: String, icon: ImageVector, onClick: () -> Unit) { DropdownMenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, null) }, onClick = onClick) }
 
-private data class ChatRowItem(val id: String, val name: String, val lastMessage: LocalChatMessage?, val isOnline: Boolean, val matchSearch: Boolean, val subtitle: String = "")
+private data class ChatRowItem(val id: String, val name: String, val lastMessage: LocalChatMessage?, val isOnline: Boolean, val matchSearch: Boolean, val subtitle: String = "", val photoUrl: String? = null)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -727,8 +759,72 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
     var showDatePicker by remember { mutableStateOf(false) }
     
     // Google Sign-In States
-    var isGoogleConfirmationMode by remember { mutableStateOf(false) }
-    var googleUserUid by remember { mutableStateOf("") }
+    val currentUser = remember { auth.currentUser }
+    var isGoogleConfirmationMode by remember { mutableStateOf(currentUser != null) }
+    var googleUserUid by remember { mutableStateOf(currentUser?.uid ?: "") }
+
+    LaunchedEffect(currentUser) {
+        if (currentUser != null && (firstName.isEmpty() || email.isEmpty())) {
+            email = currentUser.email ?: ""
+            val parts = (currentUser.displayName ?: "").split(" ", limit = 2)
+            firstName = parts.getOrNull(0) ?: ""
+            lastName = parts.getOrNull(1) ?: ""
+        }
+    }
+
+    // REAL GOOGLE SIGN-IN SETUP
+    val gso = remember {
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken("118812641303-0ulisr49hrhaj8tflf5kq078rjmjjgne.apps.googleusercontent.com")
+            .requestEmail()
+            .build()
+    }
+    val googleSignInClient = remember { com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso) }
+
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+            loading = true
+            auth.signInWithCredential(credential).addOnCompleteListener { authTask ->
+                if (authTask.isSuccessful) {
+                    val user = auth.currentUser
+                    if (user != null) {
+                        googleUserUid = user.uid
+                        email = user.email ?: ""
+                        val parts = (user.displayName ?: "").split(" ", limit = 2)
+                        firstName = parts.getOrNull(0) ?: ""
+                        lastName = parts.getOrNull(1) ?: ""
+
+                        // Check if user already exists with custom fields
+                        db.collection("users").document(user.uid).get().addOnSuccessListener { doc ->
+                            loading = false
+                            if (doc.exists() && doc.contains("customUid") && doc.getString("customUid")?.isNotEmpty() == true) {
+                                // User already fully set up
+                                onLoginSuccess()
+                            } else {
+                                // Switch to confirmation mode to collect User ID and Phone
+                                isGoogleConfirmationMode = true
+                            }
+                        }.addOnFailureListener {
+                            loading = false
+                            isGoogleConfirmationMode = true
+                        }
+                    }
+                } else {
+                    loading = false
+                    Toast.makeText(context, "Google Sign-In failed: ${authTask.exception?.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        } catch (e: ApiException) {
+            loading = false
+            Log.e(TAG, "Google sign in failed", e)
+            Toast.makeText(context, "Google sign in canceled or failed", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // PINCODE LOOKUP LOGIC
     LaunchedEffect(pincode) {
@@ -1032,24 +1128,42 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                         Button(
                             onClick = {
                                 if (isGoogleConfirmationMode) {
+                                    val currentUid = auth.currentUser?.uid ?: googleUserUid
+                                    if (currentUid.isBlank()) {
+                                        Toast.makeText(context, "Error: No authenticated user", Toast.LENGTH_SHORT).show()
+                                        isGoogleConfirmationMode = false
+                                        return@Button
+                                    }
                                     if (customUid.isBlank() || phone.isBlank()) {
                                         Toast.makeText(context, "User ID and Phone are mandatory", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
                                     loading = true
                                     val updates = hashMapOf(
+                                        "uid" to currentUid,
+                                        "email" to email,
+                                        "normalizedEmail" to email.trim().lowercase(),
+                                        "firstName" to firstName.trim(),
+                                        "lastName" to lastName.trim(),
+                                        "name" to "$firstName $lastName".trim(),
+                                        "displayName" to "$firstName $lastName".trim(),
                                         "customUid" to customUid.trim().lowercase(),
                                         "phone" to phone.trim(),
                                         "normalizedPhone" to phone.trim().replace(Regex("[^0-9+]"), ""),
-                                        "updatedAt" to Timestamp.now()
+                                        "updatedAt" to com.google.firebase.Timestamp.now(),
+                                        "isOnline" to true
                                     )
-                                    db.collection("users").document(googleUserUid)
+                                    db.collection("users").document(currentUid)
                                         .set(updates, SetOptions.merge())
                                         .addOnSuccessListener {
                                             loading = false
                                             isGoogleConfirmationMode = false
-                                            Toast.makeText(context, "Profile complete!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Welcome to Shyna!", Toast.LENGTH_SHORT).show()
                                             onLoginSuccess()
+                                        }
+                                        .addOnFailureListener {
+                                            loading = false
+                                            Toast.makeText(context, "Setup failed: ${it.message}", Toast.LENGTH_SHORT).show()
                                         }
                                     return@Button
                                 }
@@ -1159,17 +1273,11 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                             OutlinedButton(
                                 onClick = { 
-                                    // Simulation of Google Sign-In Result
-                                    loading = true
-                                    Toast.makeText(context, "Connecting Google Account...", Toast.LENGTH_SHORT).show()
-                                    scope.launch {
-                                        kotlinx.coroutines.delay(1500)
-                                        loading = false
-                                        isGoogleConfirmationMode = true
-                                        googleUserUid = "simulated_google_uid"
-                                        email = "user_from_google@gmail.com"
-                                        firstName = "Google"
-                                        lastName = "User"
+                                    try {
+                                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to launch Google Sign-In", e)
+                                        Toast.makeText(context, "Google Play Services error", Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 modifier = Modifier.weight(1.1f).height(52.dp),
@@ -1196,10 +1304,16 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                         }
                     } else {
                         TextButton(
-                            onClick = { isGoogleConfirmationMode = false },
+                            onClick = { 
+                                auth.signOut()
+                                isGoogleConfirmationMode = false
+                                googleUserUid = ""
+                                // Force parent to re-evaluate firebaseUid
+                                onLoginSuccess() 
+                            },
                             modifier = Modifier.padding(top = 16.dp)
                         ) {
-                            Text("Cancel Google linking", color = Color.White.copy(0.5f))
+                            Text("Switch Account / Logout", color = Color.White.copy(0.5f))
                         }
                     }
                 }
@@ -1640,6 +1754,12 @@ private fun ProfileImageEditorDialog(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
+    val transformState = rememberTransformableState { zoomChange, offsetChange, rotationChange ->
+        scale *= zoomChange
+        offset += offsetChange
+        rotation += rotationChange
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -1662,15 +1782,7 @@ private fun ProfileImageEditorDialog(
                             .aspectRatio(1f)
                             .clip(CircleShape)
                             .background(Color(0xFF111111))
-                            .pointerInput(Unit) {
-                                detectDragGestures { change, dragAmount ->
-                                    change.consume()
-                                    offset += dragAmount
-                                }
-                            }
-                            .pointerInput(Unit) {
-                                detectTapGestures(onDoubleTap = { scale = if (scale > 1f) 1f else 2f })
-                            },
+                            .transformable(state = transformState),
                         contentAlignment = Alignment.Center
                     ) {
                         AsyncImage(
@@ -1679,8 +1791,8 @@ private fun ProfileImageEditorDialog(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .graphicsLayer(
-                                    scaleX = scale,
-                                    scaleY = scale,
+                                    scaleX = scale.coerceIn(0.5f, 5f),
+                                    scaleY = scale.coerceIn(0.5f, 5f),
                                     rotationZ = rotation,
                                     translationX = offset.x,
                                     translationY = offset.y
@@ -1689,8 +1801,14 @@ private fun ProfileImageEditorDialog(
                         )
                         
                         Canvas(Modifier.fillMaxSize()) {
-                            val stroke = 1.dp.toPx()
-                            drawCircle(Color.White.copy(0.3f), style = androidx.compose.ui.graphics.drawscope.Stroke(stroke))
+                            val stroke = 2.dp.toPx()
+                            drawCircle(
+                                Color.White.copy(0.5f), 
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                    width = stroke,
+                                    pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+                                )
+                            )
                         }
                     }
                     
@@ -1706,20 +1824,21 @@ private fun ProfileImageEditorDialog(
                             modifier = Modifier.background(Color.White.copy(0.1f), CircleShape)
                         ) { Icon(Icons.AutoMirrored.Outlined.RotateLeft, "Rotate Left", tint = Color.White) }
                         
-                        Slider(
-                            value = scale,
-                            onValueChange = { scale = it },
-                            valueRange = 1f..4f,
-                            modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
-                            colors = SliderDefaults.colors(thumbColor = LinkCyan, activeTrackColor = LinkCyan)
-                        )
+                        IconButton(
+                            onClick = { 
+                                scale = 1f
+                                offset = Offset.Zero
+                                rotation = 0f
+                            },
+                            modifier = Modifier.background(Color.White.copy(0.1f), CircleShape)
+                        ) { Icon(Icons.Outlined.RestartAlt, "Reset", tint = Color.White) }
                         
                         IconButton(
                             onClick = { rotation += 90f },
                             modifier = Modifier.background(Color.White.copy(0.1f), CircleShape)
                         ) { Icon(Icons.AutoMirrored.Outlined.RotateRight, "Rotate Right", tint = Color.White) }
                     }
-                    Text("Pinch to zoom • Drag to move", color = Color.White.copy(0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp))
+                    Text("Pinch to zoom • Two-finger rotate • Drag to move", color = Color.White.copy(0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 16.dp))
                 }
                 
                 Row(
@@ -1727,9 +1846,10 @@ private fun ProfileImageEditorDialog(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     TextButton(onClick = onDismiss) { Text("CANCEL", color = Color.White) }
-                        Button(
-                            onClick = {
-                                val bitmap = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    Button(
+                        onClick = {
+                            val bitmap = try {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                                     val source = android.graphics.ImageDecoder.createSource(context.contentResolver, imageUri)
                                     android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
                                         decoder.isMutableRequired = true
@@ -1738,8 +1858,11 @@ private fun ProfileImageEditorDialog(
                                     @Suppress("DEPRECATION")
                                     android.provider.MediaStore.Images.Media.getBitmap(context.contentResolver, imageUri)
                                 }
-                                onConfirm(bitmap)
-                            },
+                            } catch (e: Exception) { null }
+                            
+                            if (bitmap != null) onConfirm(bitmap)
+                            else Toast.makeText(context, "Error processing image", Toast.LENGTH_SHORT).show()
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = LinkCyan),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -1778,6 +1901,8 @@ private fun SmartChatDetailScreen(
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showContactPicker by remember { mutableStateOf(false) }
+    var isUploadingMedia by remember { mutableStateOf(false) }
+    var currentRecordingFile by remember { mutableStateOf<File?>(null) }
 
     // REAL-TIME FIRESTORE LISTENER
     DisposableEffect(chatId) {
@@ -1847,23 +1972,60 @@ private fun SmartChatDetailScreen(
         }
     }
 
+    // Voice Recording Logic
+    var isRecording by remember { mutableStateOf(false) }
+    val recorder = remember { AudioRecorder(context) }
+    var recordingDuration by remember { mutableLongStateOf(0L) }
+    
+    LaunchedEffect(isRecording) {
+        if (isRecording) {
+            val start = System.currentTimeMillis()
+            while (isRecording) {
+                recordingDuration = System.currentTimeMillis() - start
+                delay(100)
+            }
+        } else {
+            recordingDuration = 0L
+        }
+    }
+
+    val uploadAndSend = { uri: Uri, type: MessageType, label: String ->
+        isUploadingMedia = true
+        val storageRef = FirebaseStorage.getInstance().reference
+        val fileRef = storageRef.child("chat_media/${chatId}/${System.currentTimeMillis()}")
+        
+        fileRef.putFile(uri).addOnSuccessListener {
+            fileRef.downloadUrl.addOnSuccessListener { downloadUri ->
+                sendMessage(label, type, downloadUri.toString())
+                isUploadingMedia = false
+            }
+        }.addOnFailureListener {
+            isUploadingMedia = false
+            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { sendMessage(it.lastPathSegment ?: "Document", MessageType.FILE, it.toString()) }
+        uri?.let { uploadAndSend(it, MessageType.FILE, it.lastPathSegment ?: "Document") }
     }
     
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { sendMessage("Sent an image", MessageType.IMAGE, it.toString()) }
+        uri?.let { uploadAndSend(it, MessageType.IMAGE, "Shared an image") }
     }
     
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
         bitmap?.let { 
-            // In a real app, upload to Firebase Storage and get URL
-            sendMessage("Sent a photo", MessageType.IMAGE, "bitmap_placeholder") 
+            // Save bitmap to file first
+            val file = File(context.cacheDir, "cam_${System.currentTimeMillis()}.jpg")
+            val out = java.io.FileOutputStream(file)
+            it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+            out.close()
+            uploadAndSend(Uri.fromFile(file), MessageType.IMAGE, "Photo from Camera")
         }
     }
     
     val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { sendMessage(it.lastPathSegment ?: "Audio", MessageType.VOICE, it.toString()) }
+        uri?.let { uploadAndSend(it, MessageType.VOICE, "Voice Note") }
     }
 
     Scaffold(
@@ -1880,10 +2042,11 @@ private fun SmartChatDetailScreen(
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text(peerName, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            val displayName = if (peer?.customUid?.isNotEmpty() == true) "$peerName (@${peer.customUid})" else peerName
+                            Text(displayName, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 text = if (peer?.isOnline == true) "online" else "last seen recently",
-                                fontSize = 12.sp,
+                                fontSize = 11.sp,
                                 color = if (peer?.isOnline == true) Color(0xFFB3E5FC) else Color.White.copy(0.7f)
                             )
                         }
@@ -1971,17 +2134,42 @@ private fun SmartChatDetailScreen(
                                 if (text.isNotBlank()) {
                                     sendMessage(text, MessageType.TEXT, null)
                                 } else {
-                                    // Voice record placeholder
+                                    if (isRecording) {
+                                        recorder.stop()
+                                        currentRecordingFile?.let { file ->
+                                            uploadAndSend(Uri.fromFile(file), MessageType.VOICE, "Voice Note")
+                                        }
+                                        isRecording = false
+                                        currentRecordingFile = null
+                                    } else {
+                                        val file = File(context.cacheDir, "rec_${System.currentTimeMillis()}.m4a")
+                                        currentRecordingFile = file
+                                        recorder.start(file)
+                                        isRecording = true
+                                    }
                                 }
                             },
                             modifier = Modifier.size(48.dp),
                             shape = CircleShape,
-                            containerColor = Color(0xFF00A884),
+                            containerColor = if (isRecording) Color.Red else Color(0xFF00A884),
                             contentColor = Color.White,
                             elevation = FloatingActionButtonDefaults.elevation(0.dp)
                         ) {
-                            Icon(if (text.isBlank()) Icons.Outlined.Mic else Icons.AutoMirrored.Outlined.Send, null)
+                            Icon(
+                                imageVector = if (text.isBlank()) {
+                                    if (isRecording) Icons.Filled.Pause else Icons.Outlined.Mic
+                                } else Icons.AutoMirrored.Outlined.Send, 
+                                null
+                            )
                         }
+                    }
+                    if (isRecording) {
+                        Text(
+                            text = "Recording: ${recordingDuration / 1000}s",
+                            color = Color.Red,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(start = 70.dp, bottom = 8.dp)
+                        )
                     }
                 }
             }
@@ -2013,13 +2201,10 @@ private fun SmartChatDetailScreen(
                     ShynaMessageBubble(
                         msg = msg,
                         onLocationClick = { 
-                            // Open in Maps
                             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))
                             context.startActivity(intent)
                         },
-                        onContactClick = { contactUid ->
-                            // Open chat with this contact or profile
-                        }
+                        onMediaClick = { onOpenMedia(it) }
                     )
                 }
             }
@@ -2041,6 +2226,7 @@ private fun SmartChatDetailScreen(
                                 icon = Icons.Outlined.AccountBox,
                                 date = "",
                                 online = u.isOnline,
+                                photoUrl = u.photoUrl,
                                 onClick = {
                                     sendMessage(u.name, MessageType.CONTACT, u.uid)
                                     showContactPicker = false
@@ -2056,7 +2242,13 @@ private fun SmartChatDetailScreen(
 }
 
 @Composable
-private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) -> Unit = {}, onContactClick: (String) -> Unit = {}) {
+private fun ShynaMessageBubble(
+    msg: LocalChatMessage, 
+    onLocationClick: (String) -> Unit = {}, 
+    onContactClick: (String) -> Unit = {},
+    onMediaClick: (LocalChatMessage) -> Unit = {}
+) {
+    val context = LocalContext.current
     val alignment = if (msg.mine) Alignment.End else Alignment.Start
     val color = if (msg.mine) Color(0xFFD9FDD3) else Color.White
     val shape = RoundedCornerShape(
@@ -2072,19 +2264,82 @@ private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) 
             shape = shape,
             shadowElevation = 1.dp,
             modifier = Modifier.widthIn(max = 300.dp).clickable { 
-                if (msg.type == MessageType.LOCATION) onLocationClick(msg.metadata ?: "")
-                if (msg.type == MessageType.CONTACT) onContactClick(msg.metadata ?: "")
+                when(msg.type) {
+                    MessageType.LOCATION -> onLocationClick(msg.metadata ?: "")
+                    MessageType.IMAGE, MessageType.VIDEO -> onMediaClick(msg)
+                    MessageType.CONTACT -> {
+                        // Metadata contains UID, text contains Name
+                        val intent = Intent(Intent.ACTION_INSERT).apply {
+                            type = ContactsContract.RawContacts.CONTENT_TYPE
+                            putExtra(ContactsContract.Intents.Insert.NAME, msg.text)
+                        }
+                        context.startActivity(intent)
+                    }
+                    else -> {}
+                }
             }
         ) {
             Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                 when(msg.type) {
                     MessageType.LOCATION -> {
                         Column {
-                            Text("📍 Shared Location", fontWeight = FontWeight.Bold, color = Color(0xFF007AFF))
-                            Box(Modifier.fillMaxWidth().height(120.dp).background(Color.LightGray, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Outlined.Map, null, modifier = Modifier.size(40.dp), tint = Color.Gray)
+                            Text("📍 Shared Location", fontWeight = FontWeight.Bold, color = Color(0xFF007AFF), fontSize = 13.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Box(Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(8.dp))) {
+                                AsyncImage(
+                                    model = "https://maps.googleapis.com/maps/api/staticmap?center=${msg.metadata}&zoom=15&size=400x400&key=YOUR_MAPS_API_KEY",
+                                    contentDescription = "Map Preview",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Box(Modifier.fillMaxSize().background(Color.Black.copy(0.1f)), contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Outlined.LocationOn, null, tint = Color.Red, modifier = Modifier.size(32.dp))
+                                }
                             }
-                            Text(msg.text, fontSize = 14.sp)
+                            Text(msg.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
+                    MessageType.IMAGE -> {
+                        Column {
+                            AsyncImage(
+                                model = msg.metadata,
+                                contentDescription = "Shared Image",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .aspectRatio(if (msg.text == "landscape") 1.5f else 0.75f),
+                                contentScale = ContentScale.Crop
+                            )
+                            if (msg.text != "landscape" && msg.text != "portrait") {
+                                Text(msg.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
+                            }
+                        }
+                    }
+                    MessageType.VIDEO -> {
+                        Box(contentAlignment = Alignment.Center) {
+                            AsyncImage(
+                                model = msg.metadata, // Assuming thumbnail or first frame
+                                contentDescription = "Video Thumbnail",
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).aspectRatio(1f),
+                                contentScale = ContentScale.Crop
+                            )
+                            Surface(shape = CircleShape, color = Color.Black.copy(0.5f), modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(12.dp))
+                            }
+                        }
+                    }
+                    MessageType.VOICE -> {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
+                            Icon(Icons.Filled.PlayArrow, null, tint = Color.Gray, modifier = Modifier.size(32.dp))
+                            Spacer(Modifier.width(8.dp))
+                            // Simple Waveform visualization (static lines for now)
+                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                repeat(15) { i ->
+                                    Box(Modifier.width(2.dp).height((10..30).random().dp).background(if (msg.mine) LinkChipSelectedText else Color.Gray))
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Text("0:12", fontSize = 11.sp, color = Color.Gray)
                         }
                     }
                     MessageType.FILE -> {
@@ -2092,17 +2347,20 @@ private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) 
                             Icon(Icons.Outlined.Description, null, tint = Color(0xFFE53935))
                             Spacer(Modifier.width(8.dp))
                             Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            Icon(Icons.Outlined.Download, null, tint = Color.Gray, modifier = Modifier.size(18.dp))
                         }
                     }
                     MessageType.CONTACT -> {
                         Column(Modifier.background(Color.Black.copy(0.05f), RoundedCornerShape(8.dp)).padding(8.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.AccountCircle, null, tint = Color.Gray, modifier = Modifier.size(32.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(msg.text, fontWeight = FontWeight.Bold)
+                                Surface(shape = CircleShape, color = Color.White, modifier = Modifier.size(40.dp)) {
+                                    Icon(Icons.Outlined.Person, null, tint = Color.Gray, modifier = Modifier.padding(8.dp))
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Text(msg.text, fontWeight = FontWeight.Bold, color = LinkText)
                             }
-                            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color.Gray.copy(0.2f))
-                            Text("Message Contact", color = Color(0xFF007AFF), textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth(), fontSize = 13.sp)
+                            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color.Gray.copy(0.1f))
+                            Text("ADD TO CONTACTS", color = Color(0xFF007AFF), fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth(), fontSize = 13.sp)
                         }
                     }
                     else -> {
@@ -2115,7 +2373,7 @@ private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) 
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val timeStr = remember(msg.time) {
-                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.time))
+                        if (msg.time == 0L) "" else SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.time))
                     }
                     Text(
                         timeStr,
@@ -2124,7 +2382,7 @@ private fun ShynaMessageBubble(msg: LocalChatMessage, onLocationClick: (String) 
                     )
                     if (msg.mine) {
                         Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Outlined.DoneAll, null, modifier = Modifier.size(14.dp), tint = Color(0xFF53BDEB))
+                        Icon(Icons.Outlined.DoneAll, null, modifier = Modifier.size(15.dp), tint = Color(0xFF53BDEB))
                     }
                 }
             }
@@ -2177,9 +2435,53 @@ private fun AttachmentItem(label: String, icon: ImageVector, color: Color, onCli
     }
 }
 
-@Composable private fun FullScreenMediaViewer(media: LocalChatMessage, onDismiss: () -> Unit) {
+@Composable
+private fun FullScreenMediaViewer(media: LocalChatMessage, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    
     Box(Modifier.fillMaxSize().background(Color.Black).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
-        AsyncImage(model = media.metadata, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        if (media.type == MessageType.VIDEO) {
+            // Video player placeholder logic (in a real app, use ExoPlayer)
+            Box(contentAlignment = Alignment.Center) {
+                AsyncImage(model = media.metadata, contentDescription = null, modifier = Modifier.fillMaxWidth())
+                Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(80.dp))
+            }
+        } else {
+            AsyncImage(model = media.metadata, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        }
+        
+        // Premium Controls (Top Bar)
+        Row(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(top = 48.dp, start = 16.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onDismiss, modifier = Modifier.background(Color.Black.copy(0.3f), CircleShape)) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = Color.White)
+            }
+            
+            Row {
+                IconButton(
+                    onClick = {
+                        // Download Logic Placeholder
+                        Toast.makeText(context, "Downloading to Gallery...", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.background(Color.Black.copy(0.3f), CircleShape)
+                ) { Icon(Icons.Outlined.Download, null, tint = Color.White) }
+                
+                Spacer(Modifier.width(8.dp))
+                
+                IconButton(
+                    onClick = {
+                        // Delete Logic Placeholder (would need Firestore ref)
+                        Toast.makeText(context, "Deleting message...", Toast.LENGTH_SHORT).show()
+                        onDismiss()
+                    },
+                    modifier = Modifier.background(Color.Black.copy(0.3f), CircleShape)
+                ) { Icon(Icons.Outlined.Delete, null, tint = Color.White) }
+            }
+        }
     }
 }
 

@@ -282,6 +282,9 @@ class MainActivity : FragmentActivity() {
         val email = user.email ?: ""
         val normalizedEmail = email.trim().lowercase()
         val displayName = user.displayName ?: ""
+        val parts = displayName.split(" ", limit = 2)
+        val fName = parts.getOrNull(0) ?: ""
+        val lName = parts.getOrNull(1) ?: ""
         val name = if (displayName.isNotBlank()) displayName else email.substringBefore("@")
         
         val syncData = mutableMapOf<String, Any>(
@@ -289,6 +292,8 @@ class MainActivity : FragmentActivity() {
             "email" to email,
             "normalizedEmail" to normalizedEmail,
             "displayName" to displayName,
+            "firstName" to fName,
+            "lastName" to lName,
             "name" to name,
             "phone" to (user.phoneNumber ?: ""),
             "photoUrl" to (user.photoUrl?.toString() ?: ""),
