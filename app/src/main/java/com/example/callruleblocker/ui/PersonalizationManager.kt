@@ -21,7 +21,7 @@ data class AppearanceSettings(
 val LocalAppearance = staticCompositionLocalOf { AppearanceSettings() }
 
 object PersonalizationManager {
-    // Professional Samsung-Style Scale Presets
+    // Professional Scale Presets
     val SCALE_SMALL = 0.85f
     val SCALE_STANDARD = 0.95f
     val SCALE_LARGE = 1.05f
@@ -86,7 +86,7 @@ fun Float.scaledSp(): TextUnit = (this * LocalAppearance.current.uiScale).sp
 
 val premiumColorPresets = mapOf(
     "Emerald Green" to Color(0xFF24C98A),
-    "Samsung Blue" to Color(0xFF2979FF),
+    "Shyna Blue" to Color(0xFF2979FF),
     "Royal Purple" to Color(0xFFA98BFF),
     "Sunset Orange" to Color(0xFFFF7043),
     "Rose Pink" to Color(0xFFF06292)

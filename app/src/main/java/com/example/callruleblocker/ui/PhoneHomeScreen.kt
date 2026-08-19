@@ -1099,14 +1099,14 @@ private fun ThemeableKeypad(
     onDigitLongClick: (String) -> Unit = {}
 ) {
     when (themeId) {
-        "Samsung" -> SamsungKeypad(keys, onDigitClick, onDigitLongClick)
-        "Apple" -> IPhoneKeypad(keys, onDigitClick, onDigitLongClick)
-        "Google", "Pixel", "Motorola", "Nokia", "Sony", "ASUS", "Lenovo" -> MaterialYouKeypad(keys, onDigitClick, onDigitLongClick)
-        "OnePlus", "OPPO", "vivo", "realme" -> ColorOSKeypad(keys, onDigitClick, onDigitLongClick)
-        "Xiaomi", "Redmi", "POCO" -> MIUIKeypad(keys, onDigitClick, onDigitLongClick)
-        "Nothing" -> NothingKeypad(keys, onDigitClick, onDigitLongClick)
-        "HONOR", "Huawei", "Meizu" -> EMUIKeypad(keys, onDigitClick, onDigitLongClick)
-        "TECNO", "Infinix", "nubia", "ZTE" -> HiOSKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna One" -> SamsungKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Fruit" -> IPhoneKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Pure", "Shyna Moto", "Shyna Finn", "Shyna Alpha", "Shyna Think" -> MaterialYouKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Oxygen", "Shyna Color", "Shyna Vivid", "Shyna Realm" -> ColorOSKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Flow", "Shyna Red", "Shyna Blade" -> MIUIKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Dot" -> NothingKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Honor", "Shyna Harmony", "Shyna Dream" -> EMUIKeypad(keys, onDigitClick, onDigitLongClick)
+        "Shyna Hi", "Shyna Infinite" -> HiOSKeypad(keys, onDigitClick, onDigitLongClick)
         "Business" -> BusinessKeypad(keys, onDigitClick, onDigitLongClick)
         "AMOLED" -> AmoledKeypad(keys, onDigitClick, onDigitLongClick)
         "Glass" -> GlassKeypad(keys, onDigitClick, onDigitLongClick)

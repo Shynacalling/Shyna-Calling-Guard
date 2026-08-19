@@ -974,7 +974,7 @@ private fun AdvancedCallScreen(
             onDismissRequest = { showRecordingBlockedDialog = false },
             title = { Text("Call Recording Blocked") },
             text = {
-                Text("Android and Samsung devices often restrict third-party call recording for privacy. To record both sides, please try turning on the speakerphone during the call.")
+                Text("Some Android devices often restrict third-party call recording for privacy. To record both sides, please try turning on the speakerphone during the call.")
             },
             confirmButton = {
                 TextButton(onClick = { showRecordingBlockedDialog = false }) { Text("OK") }

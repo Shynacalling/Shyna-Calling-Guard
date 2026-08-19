@@ -85,7 +85,12 @@ class MainActivity : FragmentActivity() {
         firebaseUser = auth.currentUser
         
         auth.addAuthStateListener {
-            firebaseUser = it.currentUser
+            val user = it.currentUser
+            firebaseUser = user
+            if (user != null) {
+                // ENSURE PROFILE SYNC ON AUTH STATE CHANGE
+                saveUserProfile(user.uid, user.displayName ?: user.email?.substringBefore("@") ?: "User", user.email ?: "", "")
+            }
         }
 
         // REDIRECT IF CALL IS ACTIVE: Ensures clicking the app icon always returns to the live call.
@@ -264,13 +269,20 @@ class MainActivity : FragmentActivity() {
 
     private fun saveUserProfile(uid: String, name: String, email: String, phone: String) {
         val db = FirebaseFirestore.getInstance()
+        val normalizedPhone = phone.replace(Regex("[^0-9+]"), "")
+        val normalizedEmail = email.trim().lowercase()
         val user = hashMapOf(
             "uid" to uid,
             "name" to name,
-            "email" to email.trim().lowercase(),
+            "displayName" to name,
+            "email" to email,
+            "normalizedEmail" to normalizedEmail,
             "phone" to phone,
+            "normalizedPhone" to normalizedPhone,
             "isOnline" to true,
-            "lastSeen" to com.google.firebase.Timestamp.now()
+            "lastSeen" to com.google.firebase.Timestamp.now(),
+            "createdAt" to com.google.firebase.Timestamp.now(),
+            "updatedAt" to com.google.firebase.Timestamp.now()
         )
         db.collection("users").document(uid).set(user, com.google.firebase.firestore.SetOptions.merge())
             .addOnFailureListener { it.printStackTrace() }
@@ -367,7 +379,7 @@ private fun SetupScreen(
                     Text("2. Set as default Phone app", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Android will show a dialog asking to make Shyna Caller Guard your " +
-                            "default Phone app, replacing Samsung's own dialer for handling calls. " +
+                            "default Phone app, replacing the system's own dialer for handling calls. " +
                             "This is the only way third-party apps can reliably see which SIM a call arrived on."
                     )
                     Button(onClick = onSetDefaultApp, enabled = !isDefaultApp) {

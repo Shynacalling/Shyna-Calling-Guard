@@ -41,7 +41,7 @@ fun SupplementaryServicesScreen(onBack: () -> Unit) {
         ) {
             item {
                 Text(
-                    "These services are controlled by your mobile carrier. Each option opens the matching Samsung/Android carrier page for the selected SIM.",
+                    "These services are controlled by your mobile carrier. Each option opens the matching system carrier page for the selected SIM.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )

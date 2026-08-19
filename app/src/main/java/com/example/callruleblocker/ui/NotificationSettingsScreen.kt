@@ -77,7 +77,7 @@ fun NotificationSettingsScreen(onBack: () -> Unit) {
                     Column(Modifier.weight(1f)) {
                         Text("Allow notifications", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            if (notificationsEnabled && permissionGranted) "On" else "Off — permission or Samsung setting required",
+                            if (notificationsEnabled && permissionGranted) "On" else "Off — permission or system setting required",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -113,7 +113,7 @@ fun NotificationSettingsScreen(onBack: () -> Unit) {
             ) {
                 Icon(Icons.Outlined.Settings, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Open Samsung notification settings")
+                Text("Open system notification settings")
             }
         }
     }

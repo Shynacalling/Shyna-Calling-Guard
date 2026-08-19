@@ -213,7 +213,7 @@ fun FeatureHubScreen(
 
                 item {
                     Text(
-                        "Note: Android, Samsung, carrier, WhatsApp, cloud and AI services require their official permissions/APIs. Shyna stores your selection and opens the correct linked control; unavailable platform capabilities are never falsely shown as active.",
+                        "Note: Android, system, carrier, Shyna Calling, cloud and AI services require their official permissions/APIs. Shyna stores your selection and opens the correct linked control; unavailable platform capabilities are never falsely shown as active.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(12.dp)
@@ -402,23 +402,23 @@ private fun advancedSections(): List<AdvancedSection> = listOf(
         f("size_duration", "Call size & duration filters", "Filter history and recordings by duration and file size", Icons.Outlined.FilterList, true, route = FeatureRoute.SETTINGS)
     )),
     AdvancedSection("automation", "Automation & Integrations", "device context and companion apps", Icons.Outlined.SettingsSuggest, listOf(
-        f("tasker", "Tasker integration", "Expose supported Shyna actions to automation", Icons.Outlined.Extension, true, route = FeatureRoute.PARTNER, pkg = "net.dinglisch.android.taskerm"),
+        f("tasker", "Automation integration", "Expose supported Shyna actions to automation", Icons.Outlined.Extension, true, route = FeatureRoute.PARTNER, pkg = "net.dinglisch.android.taskerm"),
         f("location", "Location based rules", "Apply profiles only after location permission", Icons.Outlined.LocationOn, true),
         f("bluetooth", "Bluetooth rules", "Car, headset and watch-specific profiles", Icons.Outlined.Bluetooth, true, route = FeatureRoute.BLUETOOTH),
         f("wifi", "Wi-Fi rules", "Apply home or office profiles by network", Icons.Outlined.Wifi, true),
         f("charging", "Charging rules", "Switch profile while charging or docked", Icons.Outlined.BatteryChargingFull, true),
         f("headset", "Headset rules", "Audio route and auto-answer preferences", Icons.Outlined.Headphones, true, route = FeatureRoute.BLUETOOTH),
-        f("wear", "Wear OS integration", "Open Galaxy Wearable / watch companion", Icons.Outlined.Watch, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.app.watchmanager"),
-        f("android_auto", "Android Auto support", "Open connected-device controls", Icons.Outlined.DirectionsCar, true, route = FeatureRoute.BLUETOOTH),
-        f("bixby", "Bixby integration", "Open Bixby voice assistant", Icons.Outlined.RecordVoiceOver, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.bixby.agent"),
-        f("edge", "Edge Panel shortcut", "Samsung Edge panel configuration", Icons.Outlined.ViewSidebar, true, route = FeatureRoute.SETTINGS),
-        f("widgets", "One UI widgets & AOD caller", "Widget and always-on-display linked controls", Icons.Outlined.Widgets, true, route = FeatureRoute.SETTINGS),
-        f("goodlock", "Good Lock support", "Open Samsung Good Lock when installed", Icons.Outlined.DashboardCustomize, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.goodlock")
+        f("wear", "Smartwatch integration", "Open watch companion app", Icons.Outlined.Watch, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.app.watchmanager"),
+        f("android_auto", "In-car support", "Open connected-device controls", Icons.Outlined.DirectionsCar, true, route = FeatureRoute.BLUETOOTH),
+        f("bixby", "Voice assistant integration", "Open system voice assistant", Icons.Outlined.RecordVoiceOver, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.bixby.agent"),
+        f("edge", "Side panel shortcut", "System edge panel configuration", Icons.Outlined.ViewSidebar, true, route = FeatureRoute.SETTINGS),
+        f("widgets", "System widgets & AOD caller", "Widget and always-on-display linked controls", Icons.Outlined.Widgets, true, route = FeatureRoute.SETTINGS),
+        f("goodlock", "Advanced customization", "Open system customization tools when installed", Icons.Outlined.DashboardCustomize, true, route = FeatureRoute.PARTNER, pkg = "com.samsung.android.goodlock")
     )),
     AdvancedSection("backup", "Premium, Backup & Recovery", "sync, themes and recycle retention", Icons.Outlined.CloudSync, listOf(
         f("cloud_sync", "Cloud sync", "Requires an explicitly connected cloud account", Icons.Outlined.CloudSync, true),
         f("multi_device", "Multiple device sync", "Encrypted sync design; provider required", Icons.Outlined.Devices, true),
-        f("drive_backup", "Google Drive backup", "Requires Google Drive authorization", Icons.Outlined.Backup, true),
+        f("drive_backup", "Cloud drive backup", "Requires cloud storage authorization", Icons.Outlined.Backup, true),
         f("rules_export", "Import / export rules", "Portable local rule backup", Icons.Outlined.ImportExport, true, route = FeatureRoute.RULES),
         f("unlimited", "Unlimited rules", "No artificial local rule limit", Icons.Outlined.AllInclusive, true, false, FeatureRoute.RULES),
         f("themes", "Premium theme engine", "Select call, dialer and control-center themes", Icons.Outlined.Palette, true, route = FeatureRoute.SETTINGS),

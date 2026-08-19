@@ -41,9 +41,9 @@ private const val PREFS = "call_settings"
 private const val RECORD_PREFS = "recording_settings"
 
 val BRAND_THEMES = listOf(
-    "Classic", "Apple", "Samsung", "Google", "OnePlus", "Xiaomi", "Nothing", 
-    "Motorola", "Nokia", "Sony", "ASUS", "OPPO", "vivo", "realme", 
-    "HONOR", "Huawei", "nubia", "ZTE", "Lenovo", "Meizu", "TECNO", "Infinix"
+    "Shyna Classic", "Shyna Fruit", "Shyna One", "Shyna Pure", "Shyna Oxygen", "Shyna Flow", "Shyna Dot", 
+    "Shyna Moto", "Shyna Finn", "Shyna Alpha", "Shyna Zen", "Shyna Color", "Shyna Vivid", "Shyna Realm", 
+    "Shyna Honor", "Shyna Harmony", "Shyna Red", "Shyna Blade", "Shyna Think", "Shyna Dream", "Shyna Hi", "Shyna Infinite"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -291,15 +291,15 @@ fun RecordingSettingsScreen(
                             onOpenFeatureHub()
                         }
                         DividerInset()
-                        SettingsRow(Icons.Outlined.Speed, "Speed dial numbers", "Open Samsung Phone speed-dial settings") {
-                            openSamsungPhoneApp(context)
+                        SettingsRow(Icons.Outlined.Speed, "Speed dial numbers", "Open system Phone speed-dial settings") {
+                            openSystemPhoneSettings(context)
                         }
                         DividerInset()
                         SettingsRow(Icons.Outlined.ImportExport, "Import / export contacts", "CSV backup, preview and duplicate-safe import") {
                             onOpenCsv()
                         }
                         DividerInset()
-                        SettingsRow(Icons.Outlined.RecordVoiceOver, "Voice calling", "Bixby, Gemini and assistant voice-call entry") {
+                        SettingsRow(Icons.Outlined.RecordVoiceOver, "Voice calling", "System assistant voice-call entry") {
                             openVoiceHelp(context)
                         }
                     }
@@ -323,8 +323,8 @@ fun RecordingSettingsScreen(
                             onOpenSupplementaryServices()
                         }
                         DividerInset()
-                        SettingsRow(Icons.Outlined.SettingsPhone, "Other call settings", "Open Samsung Phone call settings") {
-                            openSamsungPhoneApp(context)
+                        SettingsRow(Icons.Outlined.SettingsPhone, "Other call settings", "Open system Phone call settings") {
+                            openSystemPhoneSettings(context)
                         }
                     }
                 }
@@ -364,7 +364,7 @@ fun RecordingSettingsScreen(
                 item { Text("Privacy", style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.6f), modifier = Modifier.padding(start = 16.dp)) }
                 item {
                     SettingsCard {
-                        SettingsRow(Icons.Outlined.Notifications, "Notifications", "Samsung-style alerts and category controls") {
+                        SettingsRow(Icons.Outlined.Notifications, "Notifications", "Professional alerts and category controls") {
                             onOpenNotifications()
                         }
                         DividerInset()
@@ -1000,7 +1000,7 @@ private fun safeStartSettings(context: Context, intents: List<Intent>) {
     else runCatching { context.startActivity(Intent(Settings.ACTION_SETTINGS)) }
 }
 
-private fun openSamsungPhoneApp(context: Context) {
+private fun openSystemPhoneSettings(context: Context) {
     val launch = context.packageManager.getLaunchIntentForPackage("com.samsung.android.dialer")
         ?: context.packageManager.getLaunchIntentForPackage("com.android.server.telecom")
     safeStartSettings(context, listOfNotNull(
