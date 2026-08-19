@@ -19,7 +19,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.material3.pulltorefresh.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.LazyColumn
@@ -55,6 +60,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,6 +69,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -75,9 +83,11 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import com.example.callruleblocker.call.SimCallManager
 import com.example.callruleblocker.data.LiveKitConfig
+import com.example.callruleblocker.data.SessionManager
 import com.example.callruleblocker.data.AudioRecorder
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.google.firebase.Timestamp
@@ -86,9 +96,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.Calendar
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import com.google.android.gms.auth.api.signin.GoogleSignIn
+import kotlinx.coroutines.tasks.await
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.google.firebase.auth.GoogleAuthProvider
@@ -98,39 +108,126 @@ private const val COMM_PREFS = "smart_communication_v2"
 private enum class LinkTab { CHATS, UPDATES, COMMUNITIES, CALLS, YOU }
 private enum class MessageStatus { SENDING, SENT, DELIVERED, READ }
 private enum class MessageType { TEXT, LOCATION, FILE, VOICE, IMAGE, VIDEO, EVENT, POLL, CONTACT }
-private enum class EventStatus { UPCOMING, ONGOING, COMPLETED, CANCELLED }
-private enum class EventResponse { NONE, GOING, MAYBE, NOT_GOING }
-private enum class PollStatus { OPEN, CLOSED }
+private enum class ConnectionStatus { NONE, PENDING, ACCEPTED, BLOCKED, IGNORED }
 
-private data class PollOption(val id: String, val text: String, var voteCount: Int = 0)
+private data class Connection(
+    val id: String = "",
+    val user1: String = "",
+    val user2: String = "",
+    val status: ConnectionStatus = ConnectionStatus.NONE,
+    val initiator: String = "",
+    val blockedBy: String? = null,
+    val firstMessage: String? = null,
+    val attemptCount: Int = 0,
+    val temporaryBlockedUntil: Long = 0,
+    val lastResendAt: Long = 0,
+    val resendCount: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val acceptedAt: Long = 0,
+    val ignoredAt: Long = 0,
+    val blockedAt: Long = 0
+)
 private data class LocalChatMessage(
     val id: String = java.util.UUID.randomUUID().toString(),
+    val chatId: String = "",
     val text: String,
     val mine: Boolean,
     val time: Long,
-    val peerName: String = "", // Used as senderId in Firestore
+    val peerName: String = "", 
     val type: MessageType = MessageType.TEXT,
     val metadata: String? = null,
     val status: MessageStatus = MessageStatus.SENT,
-    val sentAt: Long = time,
+    val sentAt: Long = 0,
     val deliveredAt: Long = 0,
     val readAt: Long = 0,
     val eventId: String? = null,
     val pollId: String? = null,
-    val senderId: String = ""
+    val senderId: String = "",
+    val receiverId: String = "",
+    val isRead: Boolean = false,
+    val isDeletedForEveryone: Boolean = false,
+    val deletedFor: List<String> = emptyList(),
+    val reactions: Map<String, String> = emptyMap()
 )
 
-private val LinkBlue = Color(0xFF2979FF)
-private val LinkGreen = Color(0xFF00C853)
-private val LinkCyan = Color(0xFF00E5FF)
-private val LinkBg = Color(0xFFFFFFFF) 
-private val LinkSurface = Color(0xFFF7F8FA) 
-private val LinkCard = Color(0xFFFFFFFF)
-private val LinkMuted = Color(0xFF667781) 
-private val LinkText = Color(0xFF111B21) 
-private val LinkChipBg = Color(0xFFEFF2F5)
-private val LinkChipSelected = Color(0xFFE7FCE3)
-private val LinkChipSelectedText = Color(0xFF008069)
+// --- ADVANCED PREMIUM THEME ENGINE ---
+private enum class ThemeMode { LIGHT, DARK, SYSTEM }
+
+private data class ShynaColors(
+    val PrimaryBg: Color,
+    val SurfaceBg: Color,
+    val HeaderBg: Color,
+    val IncomingBubble: Color,
+    val OutgoingBubble: Color,
+    val TextPrimary: Color,
+    val TextSecondary: Color,
+    val BrandGreen: Color,
+    val TickRead: Color,
+    val AccentBlue: Color,
+    val DividerColor: Color,
+    val SelectionOverlay: Color,
+    val isDark: Boolean
+)
+
+private val ShynaDarkPalette = ShynaColors(
+    PrimaryBg = Color(0xFF0B141B),
+    SurfaceBg = Color(0xFF121B22),
+    HeaderBg = Color(0xFF202C33).copy(alpha = 0.95f),
+    IncomingBubble = Color(0xFF202C33),
+    OutgoingBubble = Color(0xFF005C4B),
+    TextPrimary = Color(0xFFE9EDEF),
+    TextSecondary = Color(0xFF8696A0),
+    BrandGreen = Color(0xFF00A884),
+    TickRead = Color(0xFF53BDEB),
+    AccentBlue = Color(0xFF2979FF),
+    DividerColor = Color(0xFF222D34),
+    SelectionOverlay = Color(0xFF00A884).copy(alpha = 0.15f),
+    isDark = true
+)
+
+private val ShynaLightPalette = ShynaColors(
+    PrimaryBg = Color(0xFFF0F2F5),
+    SurfaceBg = Color(0xFFFFFFFF),
+    HeaderBg = Color(0xFFFFFFFF).copy(alpha = 0.98f),
+    IncomingBubble = Color(0xFFFFFFFF),
+    OutgoingBubble = Color(0xFFE7FFDB),
+    TextPrimary = Color(0xFF111B21),
+    TextSecondary = Color(0xFF667781),
+    BrandGreen = Color(0xFF008069),
+    TickRead = Color(0xFF53BDEB),
+    AccentBlue = Color(0xFF2979FF),
+    DividerColor = Color(0xFFE9EDEF),
+    SelectionOverlay = Color(0xFF008069).copy(alpha = 0.08f),
+    isDark = false
+)
+
+private val LocalShynaColors = staticCompositionLocalOf { ShynaDarkPalette }
+
+@Composable
+private fun ShynaTheme(
+    mode: ThemeMode = ThemeMode.LIGHT,
+    content: @Composable () -> Unit
+) {
+    val darkTheme = when (mode) {
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+        ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+    }
+    val colors = if (darkTheme) ShynaDarkPalette else ShynaLightPalette
+    CompositionLocalProvider(LocalShynaColors provides colors) {
+        content()
+    }
+}
+
+
+
+
+
+// Shortcut object for easy access
+private object ShynaDesign {
+    val colors: ShynaColors @Composable get() = LocalShynaColors.current
+}
+
 
 private data class RealUser(
     val uid: String, 
@@ -152,9 +249,79 @@ private data class RealUser(
     val country: String = "India"
 )
 
+private fun hasInternet(context: Context): Boolean {
+    val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+    val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+}
+
+@Composable private fun MenuItem(text: String, icon: ImageVector, onClick: () -> Unit) { DropdownMenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, null) }, onClick = onClick) }
+
+private data class ChatRowItem(
+    val id: String, 
+    val name: String, 
+    val lastMessage: LocalChatMessage?, 
+    val isOnline: Boolean, 
+    val matchSearch: Boolean, 
+    val subtitle: String = "", 
+    val photoUrl: String? = null,
+    val unreadCount: Int = 0
+)
+
+private fun getIconForType(type: MessageType?): ImageVector = when(type) {
+    MessageType.LOCATION -> Icons.Outlined.LocationOn
+    MessageType.FILE -> Icons.AutoMirrored.Outlined.InsertDriveFile
+    MessageType.VOICE -> Icons.Outlined.Mic
+    MessageType.IMAGE -> Icons.Outlined.Image
+    MessageType.VIDEO -> Icons.Outlined.Videocam
+    MessageType.EVENT -> Icons.Outlined.Event
+    MessageType.POLL -> Icons.Outlined.Poll
+    MessageType.CONTACT -> Icons.Outlined.Person
+    else -> Icons.AutoMirrored.Outlined.Chat
+}
+
+private fun formatDate(time: Long?): String {
+    if (time == null || time == 0L) return ""
+    val sdf = SimpleDateFormat("hh:mm a", Locale.getDefault())
+    return sdf.format(Date(time))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences(COMM_PREFS, Context.MODE_PRIVATE) }
+    
+    // THEME STATE
+    var themeMode by remember { 
+        mutableStateOf(try { ThemeMode.valueOf(prefs.getString("theme_mode", ThemeMode.LIGHT.name)!!) } catch(e: Exception) { ThemeMode.LIGHT }) 
+    }
+
+    ShynaTheme(mode = themeMode) {
+        SmartCommunicationContent(
+            initialOnline = initialOnline,
+            onBack = onBack,
+            themeMode = themeMode,
+            onThemeChange = { 
+                themeMode = it
+                prefs.edit().putString("theme_mode", it.name).apply()
+            }
+        )
+    }
+}
+
+
+
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SmartCommunicationContent(
+    initialOnline: Boolean, 
+    onBack: () -> Unit,
+    themeMode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit
+) {
     val context = LocalContext.current
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
@@ -181,6 +348,10 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
             if (user != null) {
                 Log.d("ShynaDiscovery", "PROFILE_SYNC_START (Screen)")
                 val email = user.email ?: ""
+                val sessionId = SessionManager.getLocalSessionId(context)
+                                ?: SessionManager.startNewSession(context)
+                val deviceId = SessionManager.getDeviceId(context)
+
                 val syncData = mutableMapOf<String, Any>(
                     "uid" to user.uid,
                     "email" to email,
@@ -188,11 +359,18 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     "displayName" to (user.displayName ?: ""),
                     "name" to (user.displayName ?: email.substringBefore("@")),
                     "phone" to (user.phoneNumber ?: ""),
-                    "photoUrl" to (user.photoUrl?.toString() ?: ""),
                     "isOnline" to true,
+                    "activeSessionId" to sessionId,
+                    "deviceId" to deviceId,
                     "lastSeen" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
                     "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                 )
+                // Only add photoUrl if it's not empty in Auth
+                val authPhoto = user.photoUrl?.toString()
+                if (!authPhoto.isNullOrBlank()) {
+                    syncData["photoUrl"] = authPhoto
+                }
+                
                 db.collection("users").document(user.uid)
                     .set(syncData, SetOptions.merge())
                     .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid} (Screen)") }
@@ -206,26 +384,24 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     var isLoadingUsers by remember { mutableStateOf(false) }
 
     DisposableEffect(firebaseUid) {
-        if (firebaseUid != null) {
+        val currentUid = firebaseUid
+        var userListener: com.google.firebase.firestore.ListenerRegistration? = null
+        
+        if (currentUid != null) {
             isLoadingUsers = true
-            Log.d("ShynaDiscovery", "Fetching users from Firestore. Project: ${db.app.options.projectId}")
-            val listener = db.collection("users")
+            userListener = db.collection("users")
                 .limit(500) 
                 .addSnapshotListener { snapshots, error ->
                     isLoadingUsers = false
                     if (error != null) {
                         Log.e("ShynaDiscovery", "Firestore error: ${error.message}", error)
-                        Toast.makeText(context, "Search unavailable: ${error.code}", Toast.LENGTH_SHORT).show()
                         return@addSnapshotListener
                     }
                     val users = snapshots?.documents?.mapNotNull { doc ->
-                        val uid = doc.id
                         val email = doc.getString("email") ?: ""
-                        val name = doc.getString("name") ?: doc.getString("displayName") ?: email.substringBefore("@")
-                        
                         RealUser(
-                            uid = uid, 
-                            name = name, 
+                            uid = doc.id, 
+                            name = doc.getString("name") ?: doc.getString("displayName") ?: email.substringBefore("@"), 
                             firstName = doc.getString("firstName") ?: "",
                             lastName = doc.getString("lastName") ?: "",
                             email = email, 
@@ -243,18 +419,15 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                             country = doc.getString("country") ?: "India"
                         )
                     } ?: emptyList()
-                    
-                    Log.d("ShynaDiscovery", "SEARCH_RESULTS=${users.size}")
-                    Log.d("ShynaDiscovery", "Successfully loaded ${users.size} users from Firestore")
                     allRealUsers = users
                 }
-            
-            onDispose {
-                db.collection("users").document(firebaseUid!!).update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
-                listener.remove()
+        }
+        
+        onDispose {
+            if (currentUid != null) {
+                db.collection("users").document(currentUid).update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
             }
-        } else {
-            onDispose {}
+            userListener?.remove()
         }
     }
     
@@ -266,213 +439,367 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
         onDispose { auth.removeAuthStateListener(listener) }
     }
 
-    val prefs = remember { context.getSharedPreferences(COMM_PREFS, Context.MODE_PRIVATE) }
     var selectedTab by remember { mutableStateOf(if (initialOnline) LinkTab.CHATS else LinkTab.CALLS) }
     var menuOpen by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     var serverOpen by remember { mutableStateOf(false) }
     var accountDialogOpen by remember { mutableStateOf(false) }
-    var showLocalChatDialog by remember { mutableStateOf(false) }
-    var serverUrl by remember { mutableStateOf(prefs.getString("server_url", LiveKitConfig.TOKEN_SERVER_URL) ?: LiveKitConfig.TOKEN_SERVER_URL) }
 
     var showContactPicker by remember { mutableStateOf(false) }
 
-    var internetReady by remember { mutableStateOf(hasInternet(context)) }
-    var message by remember { mutableStateOf("") }
+    var isNetworkAvailable by remember { mutableStateOf(hasInternet(context)) }
     var selectedPeer by remember { mutableStateOf<String?>(null) }
     var locationTargetPeer by remember { mutableStateOf<String?>(null) }
 
-    val currentUserId = firebaseUid ?: ""
-    
-    // NEW: FETCH ACTIVE CHATS FROM FIRESTORE (Robust OR Query)
-    val allMessages = remember { mutableStateListOf<LocalChatMessage>() }
+    BackHandler(enabled = selectedPeer == null) { onBack() }
+
+    // FETCH CONNECTIONS
+    val connections = remember { mutableStateListOf<Connection>() }
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
-            val chatsRef = db.collection("chats")
-            // Listen for chats where user is either user1 or user2
-            val listener = chatsRef.addSnapshotListener { snapshots, _ ->
-                val docs = snapshots?.documents ?: emptyList()
-                val chats = docs.mapNotNull { doc ->
-                    val u1 = doc.getString("user1") ?: ""
-                    val u2 = doc.getString("user2") ?: ""
-                    if (u1 != firebaseUid && u2 != firebaseUid) return@mapNotNull null
-                    
-                    val peer = if (u1 == firebaseUid) u2 else u1
-                    LocalChatMessage(
-                        id = doc.id,
-                        text = doc.getString("lastMessage") ?: "",
-                        mine = false,
-                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
-                        peerName = peer,
-                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT }
-                    )
-                }.sortedByDescending { it.time }
-                
-                allMessages.clear()
-                allMessages.addAll(chats)
-            }
+            val listener = db.collection("connections")
+                .whereArrayContains("users", firebaseUid!!)
+                .addSnapshotListener { snapshots, _ ->
+                    val list = snapshots?.documents?.mapNotNull { doc ->
+                        val users = doc.get("users") as? List<String> ?: return@mapNotNull null
+                        Connection(
+                            id = doc.id,
+                            user1 = users.getOrNull(0) ?: "",
+                            user2 = users.getOrNull(1) ?: "",
+                            status = try { ConnectionStatus.valueOf(doc.getString("status") ?: "NONE") } catch (e: Exception) { ConnectionStatus.NONE },
+                            initiator = doc.getString("initiator") ?: "",
+                            blockedBy = doc.getString("blockedBy"),
+                            firstMessage = doc.getString("firstMessage"),
+                            attemptCount = doc.getLong("attemptCount")?.toInt() ?: 0,
+                            temporaryBlockedUntil = doc.getLong("temporaryBlockedUntil") ?: 0L,
+                            lastResendAt = doc.getLong("lastResendAt") ?: 0L,
+                            resendCount = doc.getLong("resendCount")?.toInt() ?: 0,
+                            createdAt = doc.getLong("createdAt") ?: 0L,
+                            acceptedAt = doc.getLong("acceptedAt") ?: 0L,
+                            ignoredAt = doc.getLong("ignoredAt") ?: 0L,
+                            blockedAt = doc.getLong("blockedAt") ?: 0L
+                        )
+                    } ?: emptyList()
+                    connections.clear()
+                    connections.addAll(list)
+                }
             onDispose { listener.remove() }
         } else {
             onDispose {}
         }
     }
 
-    var fullScreenMedia by remember { mutableStateOf<LocalChatMessage?>(null) }
-    var messageToInfo by remember { mutableStateOf<LocalChatMessage?>(null) }
-
-    if (locationTargetPeer != null) {
-        SendLocationScreen(
-            onBack = { locationTargetPeer = null },
-            onSendLocation = { loc ->
-                val peerId = locationTargetPeer!!
-                val chatId = if (currentUserId < peerId) "${currentUserId}_${peerId}" else "${peerId}_${currentUserId}"
-                val message = hashMapOf(
-                    "senderId" to currentUserId,
-                    "receiverId" to peerId,
-                    "text" to "📍 Shared Location",
-                    "type" to MessageType.LOCATION.name,
-                    "metadata" to loc,
-                    "timestamp" to com.google.firebase.Timestamp.now()
-                )
-                val chatUpdate = hashMapOf(
-                    "user1" to if (currentUserId < peerId) currentUserId else peerId,
-                    "user2" to if (currentUserId < peerId) peerId else currentUserId,
-                    "lastMessage" to "📍 Location",
-                    "type" to MessageType.LOCATION.name,
-                    "timestamp" to com.google.firebase.Timestamp.now()
-                )
-                db.collection("chats").document(chatId).set(chatUpdate, SetOptions.merge())
-                db.collection("chats").document(chatId).collection("messages").add(message)
-                
-                locationTargetPeer = null
-            }
-        )
-        return
+    fun getConnectionWith(peerId: String): Connection? {
+        return connections.find { it.user1 == peerId || it.user2 == peerId }
     }
     
-    if (selectedPeer != null) {
-        SmartChatDetailScreen(
-            peerId = selectedPeer!!, 
-            prefs = prefs, 
-            userId = currentUserId, 
-            allMessages = allMessages, 
-            allRealUsers = allRealUsers,
-            onBack = { selectedPeer = null },
-            onOpenMedia = { fullScreenMedia = it },
-            onLocationClick = { locationTargetPeer = it }
-        )
-        return
-    }
+    val currentUserId = firebaseUid ?: ""
 
-    if (fullScreenMedia != null) {
-        FullScreenMediaViewer(media = fullScreenMedia!!) { fullScreenMedia = null }
-        return
+    // GLOBAL "DELIVERED" UPDATER: Automatically marks incoming messages as Delivered when app is open
+    DisposableEffect(firebaseUid) {
+        val currentUid = firebaseUid
+        var deliveredListener: com.google.firebase.firestore.ListenerRegistration? = null
+        if (currentUid != null) {
+            deliveredListener = db.collectionGroup("messages")
+                .whereEqualTo("receiverId", currentUid)
+                .whereEqualTo("status", MessageStatus.SENT.name)
+                .addSnapshotListener { snapshots, _ ->
+                    snapshots?.documents?.forEach { doc ->
+                        doc.reference.update("status", MessageStatus.DELIVERED.name, "deliveredAt", com.google.firebase.Timestamp.now())
+                    }
+                }
+        }
+        onDispose { deliveredListener?.remove() }
     }
-
-    if (firebaseUid == null || isForceSetup) {
-        ShynaAuthScreen(
-            onBack = onBack,
-            onLoginSuccess = { 
-                isForceSetup = false
-                firebaseUid = auth.currentUser?.uid 
-            }
-        )
-        return
-    }
-
-    if (messageToInfo != null) {
-        MessageInfoScreen(message = messageToInfo!!) { messageToInfo = null }
-        return
-    }
-
-    Scaffold(
-        containerColor = LinkBg,
-        topBar = {
-            Column(Modifier.background(LinkBg)) {
-                TopAppBar(
-                    title = { Text("Shyna Calling", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = LinkText, modifier = Modifier.padding(start = 8.dp)) },
-                    actions = {
-                        IconButton(onClick = { menuOpen = true }) { Icon(Icons.Outlined.MoreVert, null, tint = LinkText) }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, modifier = Modifier.background(Color.White)) {
-                            MenuItem("Refresh", Icons.Outlined.Refresh) { 
-                                internetReady = hasInternet(context)
-                                // Explicit server refresh
-                                db.collection("users").get(Source.SERVER).addOnSuccessListener {
-                                    Log.d(TAG, "Manual refresh successful")
-                                }
-                                menuOpen = false 
-                            }
-                            MenuItem("Account", Icons.Outlined.AccountCircle) { accountDialogOpen = true; menuOpen = false }
-                            MenuItem("Settings", Icons.Outlined.Settings) { serverOpen = true; selectedTab = LinkTab.CALLS; menuOpen = false }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = LinkBg)
-                )
+    
+    // NEW: FETCH ACTIVE CHATS FROM FIRESTORE (Robust OR Query)
+    val allMessages = remember { mutableStateListOf<LocalChatMessage>() }
+    DisposableEffect(firebaseUid) {
+        val currentUid = firebaseUid
+        var chatsListener: com.google.firebase.firestore.ListenerRegistration? = null
+        if (currentUid != null) {
+            chatsListener = db.collection("chats").addSnapshotListener { snapshots, _ ->
+                val docs = snapshots?.documents ?: emptyList()
+                val chats = docs.mapNotNull { doc ->
+                    val u1 = doc.getString("user1") ?: ""
+                    val u2 = doc.getString("user2") ?: ""
+                    if (u1 != currentUid && u2 != currentUid) return@mapNotNull null
+                    
+                    val peer = if (u1 == currentUid) u2 else u1
+                    val unreadCount = doc.getLong("unreadCount_$currentUid")?.toInt() ?: 0
+                    LocalChatMessage(
+                        id = doc.id,
+                        text = doc.getString("lastMessage") ?: "",
+                        mine = false,
+                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
+                        peerName = peer,
+                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
+                        metadata = unreadCount.toString()
+                    )
+                }.sortedByDescending { it.time }
                 
-                // Pill Search Bar
-                Surface(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).height(48.dp), shape = CircleShape, color = LinkSurface) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
-                        Icon(Icons.Outlined.Search, null, tint = LinkMuted)
-                        Spacer(Modifier.width(12.dp))
-                        BasicTextField(
-                            value = search,
-                            onValueChange = { search = it },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            textStyle = TextStyle(fontSize = 16.sp, color = LinkText),
-                            decorationBox = { innerTextField ->
-                                if (search.isEmpty()) Text("Search Shyna users...", color = LinkMuted, fontSize = 16.sp)
-                                innerTextField()
-                            }
-                        )
-                        if (search.isNotEmpty()) {
-                            IconButton(onClick = { search = "" }, modifier = Modifier.size(24.dp)) { Icon(Icons.Outlined.Close, null, tint = LinkMuted) }
+                allMessages.clear()
+                allMessages.addAll(chats)
+            }
+        }
+        onDispose { chatsListener?.remove() }
+    }
+
+    var fullScreenMedia by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var messageToInfo by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var showBlockedListDialog by remember { mutableStateOf(false) }
+
+    if (showBlockedListDialog) {
+        AlertDialog(
+            onDismissRequest = { showBlockedListDialog = false },
+            containerColor = ShynaDesign.colors.SurfaceBg,
+            title = { Text("Blocked Users", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
+            text = {
+                val blockedConnections = connections.filter { it.status == ConnectionStatus.BLOCKED && it.blockedBy == currentUserId }
+                if (blockedConnections.isEmpty()) {
+                    Text("No blocked users.", color = ShynaDesign.colors.TextSecondary)
+                } else {
+                    LazyColumn {
+                        items(blockedConnections) { conn ->
+                            val otherId = if (conn.user1 == currentUserId) conn.user2 else conn.user1
+                            val user = allRealUsers.find { it.uid == otherId }
+                            ListItem(
+                                headlineContent = { Text(user?.name ?: "Unknown", color = ShynaDesign.colors.TextPrimary) },
+                                supportingContent = { Text(user?.email ?: "", color = ShynaDesign.colors.TextSecondary) },
+                                trailingContent = {
+                                    TextButton(onClick = {
+                                        db.collection("connections").document(conn.id).delete()
+                                    }) { Text("UNBLOCK", color = ShynaDesign.colors.BrandGreen) }
+                                },
+                                colors = ListItemDefaults.colors(containerColor = ShynaDesign.colors.HeaderBg)
+                            )
                         }
                     }
                 }
-            }
+            },
+            confirmButton = { TextButton(onClick = { showBlockedListDialog = false }) { Text("Close", color = ShynaDesign.colors.BrandGreen) } }
+        )
+    }
+
+    val currentScreen = when {
+        selectedPeer != null -> "chat"
+        locationTargetPeer != null -> "location"
+        fullScreenMedia != null -> "media"
+        firebaseUid == null || isForceSetup -> "auth"
+        messageToInfo != null -> "info"
+        else -> "main"
+    }
+
+    AnimatedContent(
+        targetState = currentScreen,
+        transitionSpec = {
+            (slideInHorizontally { it } + fadeIn()).togetherWith(slideOutHorizontally { -it } + fadeOut())
         },
-        bottomBar = { LinkBottomBar(selectedTab) { selectedTab = it } },
-        floatingActionButton = {
-            if (firebaseUid != null) {
-                FloatingActionButton(
-                    onClick = { showContactPicker = true },
-                    containerColor = Color(0xFF1D1B20),
-                    contentColor = Color.White,
-                    shape = RoundedCornerShape(16.dp)
-                ) { Icon(Icons.AutoMirrored.Outlined.Chat, null) }
-            }
-        }
-    ) { padding ->
-        Box(Modifier.fillMaxSize().background(LinkBg).padding(padding)) {
-            if (isLoadingUsers && allRealUsers.isEmpty()) {
-                CircularProgressIndicator(Modifier.align(Alignment.Center), color = LinkBlue)
-            } else {
-                when (selectedTab) {
-                    LinkTab.CHATS -> ChatsPage(
-                        messages = allMessages, 
-                        message = message, 
-                        onMessageChange = { message = it },
-                        onSend = { /* handled in detail */ },
-                        search = search,
-                        onOpenChat = { selectedPeer = it },
-                        allRealUsers = allRealUsers,
-                        onOpenMedia = { fullScreenMedia = it },
-                        currentUid = currentUserId,
-                        isLoading = isLoadingUsers
-                    )
-                    LinkTab.YOU -> YouPage(
-                        currentUser = allRealUsers.find { it.uid == firebaseUid } ?: RealUser(
-                            uid = firebaseUid ?: "", 
-                            name = auth.currentUser?.displayName ?: "Me", 
-                            email = auth.currentUser?.email ?: "",
-                            normalizedEmail = auth.currentUser?.email?.lowercase() ?: "",
-                            isOnline = true
-                        ),
-                        onLogout = { auth.signOut() }
-                    )
-                    else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { 
-                        Text("${selectedTab.name} - Coming Soon", color = LinkMuted) 
+        label = "ScreenTransition"
+    ) { screen ->
+        Box(Modifier.fillMaxSize()) {
+            when (screen) {
+                "chat" -> SmartChatDetailScreen(
+                    peerId = selectedPeer!!, 
+                    userId = currentUserId, 
+                    allRealUsers = allRealUsers,
+                    connection = getConnectionWith(selectedPeer!!),
+                    onBack = { selectedPeer = null },
+                    onOpenMedia = { fullScreenMedia = it },
+                    onLocationClick = { locationTargetPeer = it },
+                    onMessageInfo = { messageToInfo = it }
+                )
+                "location" -> SendLocationScreen(
+                    onBack = { locationTargetPeer = null },
+                    onSendLocation = { loc ->
+                        val peerId = locationTargetPeer!!
+                        val chatId = if (currentUserId < peerId) "${currentUserId}_${peerId}" else "${peerId}_${currentUserId}"
+                        val message = hashMapOf(
+                            "senderId" to currentUserId,
+                            "receiverId" to peerId,
+                            "text" to "📍 Shared Location",
+                            "type" to MessageType.LOCATION.name,
+                            "metadata" to loc,
+                            "timestamp" to com.google.firebase.Timestamp.now()
+                        )
+                        val chatUpdate = hashMapOf(
+                            "user1" to if (currentUserId < peerId) currentUserId else peerId,
+                            "user2" to if (currentUserId < peerId) peerId else currentUserId,
+                            "lastMessage" to "📍 Location",
+                            "type" to MessageType.LOCATION.name,
+                            "timestamp" to com.google.firebase.Timestamp.now()
+                        )
+                        db.collection("chats").document(chatId).set(chatUpdate, SetOptions.merge())
+                        db.collection("chats").document(chatId).collection("messages").add(message)
+                        
+                        locationTargetPeer = null
+                    }
+                )
+                "media" -> FullScreenMediaViewer(media = fullScreenMedia!!) { fullScreenMedia = null }
+                "auth" -> ShynaAuthScreen(
+                    onBack = onBack,
+                    onLoginSuccess = { 
+                        isForceSetup = false
+                        firebaseUid = auth.currentUser?.uid 
+                    }
+                )
+                "info" -> MessageInfoScreen(message = messageToInfo!!) { messageToInfo = null }
+                else -> Scaffold(
+                    containerColor = ShynaDesign.colors.PrimaryBg,
+                    topBar = {
+                        Column(
+                            modifier = Modifier
+                                .background(ShynaDesign.colors.HeaderBg)
+                                .shadow(if (ShynaDesign.colors.isDark) 0.dp else 4.dp, spotColor = Color.Black.copy(0.1f))
+                        ) {
+                            TopAppBar(
+                                title = { 
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "Shyna", 
+                                            fontSize = 28.sp, 
+                                            fontWeight = FontWeight.ExtraBold, 
+                                            color = ShynaDesign.colors.BrandGreen,
+                                            letterSpacing = (-0.5).sp
+                                        )
+                                        Text(
+                                            " Guard", 
+                                            fontSize = 28.sp, 
+                                            fontWeight = FontWeight.Medium, 
+                                            color = ShynaDesign.colors.TextPrimary,
+                                            letterSpacing = (-0.5).sp
+                                        )
+                                    }
+                                },
+                                navigationIcon = {
+                                    IconButton(onClick = onBack) {
+                                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = ShynaDesign.colors.TextPrimary)
+                                    }
+                                },
+                                actions = {
+                                    IconButton(onClick = { menuOpen = true }) { 
+                                        Icon(
+                                            Icons.Outlined.MoreVert, 
+                                            null, 
+                                            tint = ShynaDesign.colors.TextPrimary,
+                                            modifier = Modifier.graphicsLayer { alpha = 0.8f }
+                                        ) 
+                                    }
+                                    DropdownMenu(
+                                        expanded = menuOpen, 
+                                        onDismissRequest = { menuOpen = false }, 
+                                        modifier = Modifier.background(ShynaDesign.colors.SurfaceBg).shadow(8.dp, RoundedCornerShape(12.dp))
+                                    ) {
+                                        MenuItem("Refresh", Icons.Outlined.Refresh) { 
+                                            isNetworkAvailable = hasInternet(context)
+                                            db.collection("users").get(com.google.firebase.firestore.Source.SERVER)
+                                            menuOpen = false 
+                                        }
+                                        MenuItem("Privacy Settings", Icons.Outlined.Security) { menuOpen = false }
+                                        MenuItem("Blocked", Icons.Outlined.Block) { showBlockedListDialog = true; menuOpen = false }
+                                        MenuItem("Account", Icons.Outlined.AccountCircle) { accountDialogOpen = true; menuOpen = false }
+                                        MenuItem("Advanced", Icons.Outlined.Settings) { serverOpen = true; menuOpen = false }
+                                    }
+                                },
+                                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                            )
+
+                            // Network Status Indicator (Compact Modern)
+                            AnimatedVisibility(visible = !isNetworkAvailable) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                                    color = Color(0xFFFDECEA),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Icon(Icons.Outlined.WifiOff, null, tint = Color(0xFFD32F2F), modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Offline Mode", color = Color(0xFFD32F2F), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            
+                            // Advanced Search Bar (Integrated)
+                            Box(modifier = Modifier.padding(bottom = 12.dp)) {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp)
+                                        .height(48.dp), 
+                                    shape = RoundedCornerShape(14.dp), 
+                                    color = if (ShynaDesign.colors.isDark) ShynaDesign.colors.SurfaceBg else Color(0xFFF2F2F7),
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 14.dp)) {
+                                        Icon(Icons.Outlined.Search, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
+                                        Spacer(Modifier.width(10.dp))
+                                        BasicTextField(
+                                            value = search,
+                                            onValueChange = { search = it },
+                                            modifier = Modifier.weight(1f),
+                                            singleLine = true,
+                                            textStyle = TextStyle(fontSize = 16.sp, color = ShynaDesign.colors.TextPrimary),
+                                            cursorBrush = SolidColor(ShynaDesign.colors.BrandGreen),
+                                            decorationBox = { innerTextField ->
+                                                if (search.isEmpty()) Text("Search people & messages", color = ShynaDesign.colors.TextSecondary, fontSize = 15.sp)
+                                                innerTextField()
+                                            }
+                                        )
+                                        if (search.isNotEmpty()) {
+                                            IconButton(onClick = { search = "" }, modifier = Modifier.size(24.dp)) { 
+                                                Icon(Icons.Outlined.Close, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(16.dp)) 
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    bottomBar = { LinkBottomBar(selectedTab) { selectedTab = it } },
+                    floatingActionButton = {
+                        if (firebaseUid != null) {
+                            FloatingActionButton(
+                                onClick = { showContactPicker = true },
+                                containerColor = ShynaDesign.colors.BrandGreen,
+                                contentColor = Color.White,
+                                shape = RoundedCornerShape(16.dp)
+                            ) { Icon(Icons.AutoMirrored.Outlined.Chat, null) }
+                        }
+                    }
+                ) { padding ->
+                    Box(Modifier.fillMaxSize().background(ShynaDesign.colors.PrimaryBg).padding(padding)) {
+                        if (isLoadingUsers && allRealUsers.isEmpty()) {
+                            CircularProgressIndicator(Modifier.align(Alignment.Center), color = ShynaDesign.colors.BrandGreen)
+                        } else {
+                            when (selectedTab) {
+                                LinkTab.CHATS -> ChatsPage(
+                                    messages = allMessages, 
+                                    connections = connections,
+                                    search = search,
+                                    onOpenChat = { selectedPeer = it },
+                                    allRealUsers = allRealUsers,
+                                    onOpenMedia = { fullScreenMedia = it },
+                                    currentUid = currentUserId,
+                                    isLoading = isLoadingUsers
+                                )
+                                LinkTab.YOU -> YouPage(
+                                    currentUser = allRealUsers.find { it.uid == firebaseUid } ?: RealUser(
+                                        uid = firebaseUid ?: "", 
+                                        name = auth.currentUser?.displayName ?: "Me", 
+                                        email = auth.currentUser?.email ?: "",
+                                        normalizedEmail = auth.currentUser?.email?.lowercase() ?: "",
+                                        isOnline = true
+                                    ),
+                                    onLogout = { auth.signOut() }
+                                )
+                                else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { 
+                                    Text("${selectedTab.name} - Coming Soon", color = ShynaDesign.colors.TextSecondary) 
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -482,11 +809,11 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     if (showContactPicker) {
         AlertDialog(
             onDismissRequest = { showContactPicker = false },
-            containerColor = Color.White,
-            title = { Text("Start new chat", fontWeight = FontWeight.Bold) },
+            containerColor = ShynaDesign.colors.SurfaceBg,
+            title = { Text("Start new chat", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
             text = {
                 if (allRealUsers.isEmpty()) {
-                    Text("No Shyna users found.", color = LinkMuted)
+                    Text("No Shyna users found.", color = ShynaDesign.colors.TextSecondary)
                 } else {
                     LazyColumn {
                         items(allRealUsers) { user ->
@@ -498,6 +825,7 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                                 date = "",
                                 online = user.isOnline,
                                 photoUrl = user.photoUrl,
+                                unreadCount = 0,
                                 onClick = {
                                     selectedPeer = user.uid
                                     showContactPicker = false
@@ -507,21 +835,42 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showContactPicker = false }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { showContactPicker = false }) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) } }
         )
     }
 
     if (accountDialogOpen) {
         AlertDialog(
             onDismissRequest = { accountDialogOpen = false },
-            containerColor = Color.White,
-            title = { Text("Account Settings", fontWeight = FontWeight.Bold) },
+            containerColor = ShynaDesign.colors.SurfaceBg,
+            title = { Text("Account Settings", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val currentUser = auth.currentUser
                     if (currentUser != null) {
-                        Text("Logged in as: ${currentUser.email}", color = LinkChipSelectedText, fontSize = 16.sp)
-                        Text("UID: ${currentUser.uid}", color = LinkMuted, fontSize = 11.sp)
+                        Text("Logged in as: ${currentUser.email}", color = ShynaDesign.colors.BrandGreen, fontSize = 16.sp)
+                        Text("UID: ${currentUser.uid}", color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
+                        
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp), color = ShynaDesign.colors.DividerColor)
+                        
+                        Text("App Theme", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
+                        
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ThemeMode.entries.forEach { mode ->
+                                val selected = themeMode == mode
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = { onThemeChange(mode) },
+                                    label = { Text(mode.name) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = ShynaDesign.colors.BrandGreen,
+                                        selectedLabelColor = Color.White,
+                                        labelColor = ShynaDesign.colors.TextSecondary
+                                    )
+                                )
+                            }
+                        }
+
                         Button(
                             onClick = { auth.signOut(); accountDialogOpen = false },
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -534,17 +883,139 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { accountDialogOpen = false }) { Text("Close", color = LinkBlue) } }
+            confirmButton = { TextButton(onClick = { accountDialogOpen = false }) { Text("Close", color = ShynaDesign.colors.BrandGreen) } }
         )
     }
 }
 
+
+
+
+
+@Composable
+private fun RequestCard(
+    name: String,
+    photoUrl: String?,
+    message: String,
+    onAccept: () -> Unit,
+    onIgnore: () -> Unit,
+    onBlock: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = ShynaDesign.colors.SurfaceBg,
+        shadowElevation = 4.dp,
+        border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = CircleShape, 
+                    modifier = Modifier.size(54.dp), 
+                    color = ShynaDesign.colors.HeaderBg
+                ) {
+                    if (photoUrl != null) AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                    else Icon(Icons.Outlined.Person, null, modifier = Modifier.padding(12.dp), tint = ShynaDesign.colors.TextSecondary)
+                }
+                Spacer(Modifier.width(16.dp))
+                Column {
+                    Text(name, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = ShynaDesign.colors.TextPrimary)
+                    Text("New Message Request", fontSize = 13.sp, color = ShynaDesign.colors.TextSecondary)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Surface(
+                color = ShynaDesign.colors.HeaderBg, 
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
+            ) {
+                Text(
+                    text = message,
+                    modifier = Modifier.padding(16.dp),
+                    fontSize = 15.sp,
+                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    color = ShynaDesign.colors.TextPrimary.copy(alpha = 0.9f),
+                    lineHeight = 22.sp
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = onAccept,
+                    modifier = Modifier.weight(1.2f).height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen),
+                    shape = RoundedCornerShape(12.dp)
+                ) { Text("ACCEPT", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp) }
+                
+                OutlinedButton(
+                    onClick = onIgnore,
+                    modifier = Modifier.weight(1f).height(46.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, ShynaDesign.colors.TextSecondary.copy(0.4f))
+                ) { Text("IGNORE", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = ShynaDesign.colors.TextPrimary) }
+                
+                TextButton(
+                    onClick = onBlock,
+                    modifier = Modifier.height(46.dp)
+                ) { Text("BLOCK", color = Color.Red.copy(0.8f), fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+            }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun ShimmerItem() {
+    val transition = rememberInfiniteTransition(label = "shimmer")
+    val translateAnim by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1000f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+
+    val shimmerColors = listOf(
+        ShynaDesign.colors.HeaderBg.copy(alpha = 0.6f),
+        ShynaDesign.colors.HeaderBg.copy(alpha = 0.2f),
+        ShynaDesign.colors.HeaderBg.copy(alpha = 0.6f),
+    )
+
+    val brush = Brush.linearGradient(
+        colors = shimmerColors,
+        start = Offset.Zero,
+        end = Offset(x = translateAnim, y = translateAnim)
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.size(52.dp).clip(CircleShape).background(brush))
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Box(modifier = Modifier.fillMaxWidth(0.5f).height(16.dp).background(brush))
+            Spacer(Modifier.height(8.dp))
+            Box(modifier = Modifier.fillMaxWidth(0.7f).height(12.dp).background(brush))
+        }
+    }
+}
+
+
+
+
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatsPage(
     messages: List<LocalChatMessage>, 
-    message: String, 
-    onMessageChange: (String) -> Unit, 
-    onSend: () -> Unit, 
+    connections: List<Connection>,
     search: String, 
     onOpenChat: (String) -> Unit,
     allRealUsers: List<RealUser> = emptyList(),
@@ -552,12 +1023,22 @@ private fun ChatsPage(
     currentUid: String = "",
     isLoading: Boolean = false
 ) {
-    val displayList = remember(messages.size, search, allRealUsers) {
+    var isRefreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val db = remember { FirebaseFirestore.getInstance() }
+    val pullToRefreshState = rememberPullToRefreshState()
+
+    val displayList = remember(messages.size, search, allRealUsers, connections.size) {
         val rawQuery = search.trim()
         val query = rawQuery.lowercase()
         Log.d("ShynaDiscovery", "SEARCH_QUERY='$query'")
         
-        val items = allRealUsers.map { user ->
+        val items = allRealUsers.mapNotNull { user ->
+            val conn = connections.find { it.user1 == user.uid || it.user2 == user.uid }
+            
+            // BLOCK/IGNORE FILTERING
+            if (conn?.status == ConnectionStatus.BLOCKED || conn?.status == ConnectionStatus.IGNORED) return@mapNotNull null
+
             val lastMsg = messages.find { it.peerName == user.uid }
             
             // ROBUST MATCHING
@@ -573,10 +1054,11 @@ private fun ChatsPage(
                 id = user.uid,
                 name = user.name,
                 lastMessage = lastMsg,
-                isOnline = user.isOnline,
+                isOnline = if (conn?.status == ConnectionStatus.ACCEPTED) user.isOnline else false,
                 matchSearch = match,
                 subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
-                photoUrl = user.photoUrl
+                photoUrl = user.photoUrl,
+                unreadCount = lastMsg?.metadata?.toIntOrNull() ?: 0
             )
         }
 
@@ -587,65 +1069,170 @@ private fun ChatsPage(
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize().background(LinkBg), contentPadding = PaddingValues(top = 8.dp)) {
-        val query = search.trim()
-        if (query.isEmpty()) {
-            items(displayList) { item ->
-                ShynaContactRow(
-                    name = item.name, 
-                    subtitle = item.subtitle,
-                    preview = item.lastMessage?.text ?: "No messages", 
-                    icon = getIconForType(item.lastMessage?.type),
-                    date = formatDate(item.lastMessage?.time),
-                    online = item.isOnline,
-                    photoUrl = item.photoUrl,
-                    onClick = { onOpenChat(item.id) }
-                )
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            scope.launch {
+                isRefreshing = true
+                db.collection("users").get(com.google.firebase.firestore.Source.SERVER)
+                db.collection("connections").get(com.google.firebase.firestore.Source.SERVER)
+                delay(1000)
+                isRefreshing = false
             }
-            if (displayList.isEmpty() && allRealUsers.isNotEmpty()) {
-                item { ListHeader("Suggested for you") }
-                items(allRealUsers.take(15)) { user ->
-                    ShynaContactRow(
-                        name = user.name + (if(user.uid == currentUid) " (You)" else ""),
-                        subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
-                        preview = if (user.isOnline) "Active now" else "Start a new chat",
-                        icon = Icons.Outlined.Person,
-                        date = "",
-                        online = user.isOnline,
-                        photoUrl = user.photoUrl,
-                        onClick = { onOpenChat(user.uid) }
-                    )
-                }
-            } else if (allRealUsers.isEmpty() && !isLoading) {
+        },
+        state = pullToRefreshState,
+        modifier = Modifier.fillMaxSize().background(ShynaDesign.colors.PrimaryBg)
+    ) {
+        LazyColumn(Modifier.fillMaxSize()) {
+            // ADVANCED STORIES ROW (Online Users)
+            val onlineUsers = allRealUsers.filter { it.uid != currentUid && it.isOnline }.take(10)
+            if (onlineUsers.isNotEmpty() && search.isEmpty()) {
                 item {
-                    Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Outlined.CloudOff, null, Modifier.size(48.dp), tint = LinkMuted)
-                        Spacer(Modifier.height(12.dp))
-                        Text("No Shyna users found on server.\nCheck your Firestore Rules.", color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontSize = 14.sp)
+                    Column(Modifier.padding(vertical = 12.dp)) {
+                        ListHeader("Active Now")
+                        androidx.compose.foundation.lazy.LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.padding(top = 8.dp)
+                        ) {
+                            items(onlineUsers) { user ->
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onOpenChat(user.uid) }) {
+                                    Box {
+                                        Surface(
+                                            shape = CircleShape, 
+                                            modifier = Modifier.size(62.dp),
+                                            color = ShynaDesign.colors.SurfaceBg,
+                                            border = BorderStroke(2.5.dp, Brush.sweepGradient(listOf(ShynaDesign.colors.BrandGreen, ShynaDesign.colors.AccentBlue, ShynaDesign.colors.BrandGreen)))
+                                        ) {
+                                            if (user.photoUrl != null) AsyncImage(model = user.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                                            else Icon(Icons.Outlined.Person, null, modifier = Modifier.padding(14.dp), tint = ShynaDesign.colors.TextSecondary)
+                                        }
+                                        Box(modifier = Modifier.size(14.dp).align(Alignment.BottomEnd).offset(x = (-2).dp, y = (-2).dp).background(Color.White, CircleShape).padding(2.dp)) {
+                                            Box(Modifier.fillMaxSize().background(ShynaDesign.colors.BrandGreen, CircleShape))
+                                        }
+                                    }
+                                    Text(user.name.split(" ")[0], fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.padding(top = 6.dp))
+                                }
+                            }
+                        }
                     }
                 }
             }
-        } else {
-            if (displayList.isNotEmpty()) {
-                item { ListHeader("Search Results (${displayList.size})") }
+
+            if (isLoading && displayList.isEmpty()) {
+                items(6) { ShimmerItem() }
+            }
+            val query = search.trim()
+            if (query.isEmpty()) {
+                val myRequests = connections.filter { it.status == ConnectionStatus.PENDING && it.initiator != currentUid }
+                
+                if (myRequests.isNotEmpty()) {
+                    item { ListHeader("New Communication Requests (${myRequests.size})") }
+                    items(myRequests) { conn ->
+                        val otherId = if (conn.user1 == currentUid) conn.user2 else conn.user1
+                        val sender = allRealUsers.find { it.uid == otherId }
+                        val db = remember { FirebaseFirestore.getInstance() }
+                        RequestCard(
+                            name = sender?.name ?: "Unknown User",
+                            photoUrl = sender?.photoUrl,
+                            message = conn.firstMessage ?: "Wants to connect",
+                            onAccept = { 
+                                db.collection("connections").document(conn.id).update("status", ConnectionStatus.ACCEPTED.name, "acceptedAt", System.currentTimeMillis())
+                            },
+                            onIgnore = {
+                                val resends = conn.resendCount
+                                val days = when(resends) {
+                                    0 -> 1L
+                                    1 -> 3L
+                                    2 -> 7L
+                                    3 -> 30L
+                                    4 -> 60L
+                                    5 -> 90L
+                                    6 -> 180L
+                                    else -> 365L
+                                }
+                                val cooldown = System.currentTimeMillis() + (days * 24 * 60 * 60 * 1000)
+                                db.collection("connections").document(conn.id).update(
+                                    "status", ConnectionStatus.IGNORED.name, 
+                                    "ignoredAt", System.currentTimeMillis(),
+                                    "temporaryBlockedUntil", cooldown
+                                )
+                            },
+                            onBlock = {
+                                db.collection("connections").document(conn.id).update("status", ConnectionStatus.BLOCKED.name, "blockedBy", currentUid, "blockedAt", System.currentTimeMillis())
+                            }
+                        )
+                    }
+                    item { Spacer(Modifier.height(8.dp)) }
+                }
+
                 items(displayList) { item ->
                     ShynaContactRow(
                         name = item.name, 
                         subtitle = item.subtitle,
-                        preview = if (item.lastMessage != null) "Message history found" else "Tap to start chatting", 
-                        icon = if (item.lastMessage == null) Icons.Outlined.PersonSearch else getIconForType(item.lastMessage?.type),
+                        preview = item.lastMessage?.text ?: "No messages", 
+                        icon = getIconForType(item.lastMessage?.type),
                         date = formatDate(item.lastMessage?.time),
                         online = item.isOnline,
                         photoUrl = item.photoUrl,
+                        unreadCount = item.unreadCount,
                         onClick = { onOpenChat(item.id) }
                     )
                 }
+                if (displayList.isEmpty() && allRealUsers.isNotEmpty()) {
+                    val filteredSuggestions = allRealUsers.filter { user ->
+                        val conn = connections.find { it.user1 == user.uid || it.user2 == user.uid }
+                        conn?.status != ConnectionStatus.BLOCKED && conn?.status != ConnectionStatus.IGNORED
+                    }.take(15)
+
+                    if (filteredSuggestions.isNotEmpty()) {
+                        item { ListHeader("Suggested for you") }
+                        items(filteredSuggestions) { user ->
+                            ShynaContactRow(
+                                name = user.name + (if(user.uid == currentUid) " (You)" else ""),
+                                subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
+                                preview = if (user.isOnline) "Active now" else "Start a new chat",
+                                icon = Icons.Outlined.Person,
+                                date = "",
+                                online = false,
+                                photoUrl = user.photoUrl,
+                                unreadCount = 0,
+                                onClick = { onOpenChat(user.uid) }
+                            )
+                        }
+                    }
+                } else if (allRealUsers.isEmpty() && !isLoading) {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Outlined.CloudOff, null, Modifier.size(48.dp), tint = ShynaDesign.colors.TextSecondary)
+                            Spacer(Modifier.height(12.dp))
+                            Text("No Shyna users found on server.\nCheck your Firestore Rules.", color = ShynaDesign.colors.TextSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontSize = 14.sp)
+                        }
+                    }
+                }
             } else {
-                item {
-                    Column(Modifier.fillMaxWidth().padding(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Outlined.SearchOff, null, Modifier.size(64.dp), tint = LinkMuted)
-                        Spacer(Modifier.height(16.dp))
-                        Text("No users found matching '$query'", color = LinkMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                if (displayList.isNotEmpty()) {
+                    item { ListHeader("Search Results (${displayList.size})") }
+                    items(displayList) { item ->
+                        ShynaContactRow(
+                            name = item.name, 
+                            subtitle = item.subtitle,
+                            preview = if (item.lastMessage != null) "Message history found" else "Tap to start chatting", 
+                            icon = if (item.lastMessage == null) Icons.Outlined.PersonSearch else getIconForType(item.lastMessage?.type),
+                            date = formatDate(item.lastMessage?.time),
+                            online = item.isOnline,
+                            photoUrl = item.photoUrl,
+                            unreadCount = item.unreadCount,
+                            onClick = { onOpenChat(item.id) }
+                        )
+                    }
+                } else {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Outlined.SearchOff, null, Modifier.size(64.dp), tint = ShynaDesign.colors.TextSecondary)
+                            Spacer(Modifier.height(16.dp))
+                            Text("No users found matching '$query'", color = ShynaDesign.colors.TextSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        }
                     }
                 }
             }
@@ -653,87 +1240,209 @@ private fun ChatsPage(
     }
 }
 
+
+
+
+
 @Composable
-private fun ShynaContactRow(name: String, subtitle: String = "", preview: String, icon: ImageVector, date: String, online: Boolean = false, photoUrl: String? = null, onClick: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box {
-            Surface(shape = CircleShape, color = Color(0xFFE1E4E7), modifier = Modifier.size(56.dp)) {
-                if (photoUrl != null) {
-                    AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+private fun ShynaContactRow(
+    name: String, 
+    subtitle: String = "", 
+    preview: String, 
+    icon: ImageVector, 
+    date: String, 
+    online: Boolean = false, 
+    photoUrl: String? = null, 
+    unreadCount: Int = 0,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp), 
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                // Gradient Ring for Online Status
+                val ringBrush = if (online) {
+                    Brush.sweepGradient(listOf(ShynaDesign.colors.BrandGreen, ShynaDesign.colors.AccentBlue, ShynaDesign.colors.BrandGreen))
                 } else {
-                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Person, null, tint = Color.Gray, modifier = Modifier.size(32.dp)) }
+                    SolidColor(ShynaDesign.colors.DividerColor)
+                }
+                
+                Surface(
+                    shape = CircleShape, 
+                    modifier = Modifier.size(60.dp),
+                    color = ShynaDesign.colors.SurfaceBg,
+                    border = BorderStroke(2.dp, ringBrush)
+                ) {
+                    Box(modifier = Modifier.padding(3.dp)) {
+                        Surface(shape = CircleShape, modifier = Modifier.fillMaxSize()) {
+                            if (photoUrl != null) {
+                                AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                            } else {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.background(ShynaDesign.colors.HeaderBg)) { 
+                                    Icon(Icons.Outlined.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(30.dp)) 
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            if (online) {
-                Box(modifier = Modifier.size(14.dp).align(Alignment.BottomEnd).background(Color.White, CircleShape).padding(2.dp)) {
-                    Box(Modifier.fillMaxSize().background(LinkGreen, CircleShape))
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = name, 
+                            fontWeight = FontWeight.ExtraBold, 
+                            fontSize = 17.sp, 
+                            color = ShynaDesign.colors.TextPrimary, 
+                            maxLines = 1, 
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (subtitle.isNotBlank()) {
+                            Text(
+                                text = subtitle, 
+                                fontSize = 12.sp, 
+                                color = ShynaDesign.colors.TextSecondary,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                    Text(
+                        text = date, 
+                        color = if (unreadCount > 0) ShynaDesign.colors.BrandGreen else ShynaDesign.colors.TextSecondary, 
+                        fontSize = 12.sp, 
+                        fontWeight = if (unreadCount > 0) FontWeight.Bold else FontWeight.Medium
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (icon != Icons.Outlined.Chat) {
+                        Icon(icon, null, modifier = Modifier.size(15.dp).padding(end = 4.dp), tint = ShynaDesign.colors.TextSecondary)
+                    }
+                    Text(
+                        text = preview, 
+                        color = if (unreadCount > 0) ShynaDesign.colors.TextPrimary else ShynaDesign.colors.TextSecondary, 
+                        fontSize = 14.5.sp, 
+                        maxLines = 1, 
+                        overflow = TextOverflow.Ellipsis, 
+                        modifier = Modifier.weight(1f),
+                        fontWeight = if (unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                    if (unreadCount > 0) {
+                        Surface(
+                            color = ShynaDesign.colors.BrandGreen, 
+                            shape = RoundedCornerShape(10.dp), 
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text(
+                                if (unreadCount > 99) "99+" else unreadCount.toString(),
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
             }
-        }
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(text = name, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LinkText, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (subtitle.isNotBlank()) Text(subtitle, fontSize = 12.sp, color = LinkChipSelectedText)
-                }
-                Text(text = date, color = LinkMuted, fontSize = 12.sp)
-            }
-            Text(text = preview, color = LinkMuted, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
 
+
+
+
+
 @Composable
 private fun ListHeader(title: String) {
-    Text(text = title, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LinkChipSelectedText, letterSpacing = 1.sp)
+    Text(text = title, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp), fontSize = 12.sp, fontWeight = FontWeight.Black, color = ShynaDesign.colors.BrandGreen, letterSpacing = 1.5.sp)
 }
 
 @Composable
 private fun LinkBottomBar(selected: LinkTab, onSelect: (LinkTab) -> Unit) {
-    NavigationBar(containerColor = Color.White) {
-        LinkTabItem(LinkTab.CHATS, selected, "Chats", Icons.Outlined.Chat, onSelect)
-        LinkTabItem(LinkTab.UPDATES, selected, "Updates", Icons.Outlined.DonutLarge, onSelect)
-        LinkTabItem(LinkTab.COMMUNITIES, selected, "Groups", Icons.Outlined.Groups, onSelect)
-        LinkTabItem(LinkTab.CALLS, selected, "Calls", Icons.Outlined.Call, onSelect)
-        NavigationBarItem(
-            selected = selected == LinkTab.YOU,
-            onClick = { onSelect(LinkTab.YOU) },
-            icon = { Icon(Icons.Outlined.Person, null) },
-            label = { Text("You") },
-            colors = NavigationBarItemDefaults.colors(selectedIconColor = LinkChipSelectedText, indicatorColor = LinkChipSelected)
-        )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = ShynaDesign.colors.HeaderBg,
+        shadowElevation = 16.dp,
+        border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor.copy(alpha = 0.5f))
+    ) {
+        NavigationBar(
+            containerColor = Color.Transparent, 
+            tonalElevation = 0.dp,
+            modifier = Modifier.height(72.dp)
+        ) {
+            LinkTabItem(LinkTab.CHATS, selected, "Chats", Icons.Outlined.Chat, onSelect)
+            LinkTabItem(LinkTab.UPDATES, selected, "Updates", Icons.Outlined.DonutLarge, onSelect)
+            LinkTabItem(LinkTab.COMMUNITIES, selected, "Groups", Icons.Outlined.Groups, onSelect)
+            LinkTabItem(LinkTab.CALLS, selected, "Calls", Icons.Outlined.Call, onSelect)
+            
+            val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+            val youSelected = selected == LinkTab.YOU
+            NavigationBarItem(
+                selected = youSelected,
+                onClick = { 
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onSelect(LinkTab.YOU) 
+                },
+                icon = { 
+                    Surface(
+                        modifier = Modifier.size(28.dp),
+                        shape = CircleShape,
+                        color = if (youSelected) ShynaDesign.colors.BrandGreen else ShynaDesign.colors.TextSecondary.copy(0.1f),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Person, 
+                            null, 
+                            tint = if (youSelected) Color.White else ShynaDesign.colors.TextSecondary,
+                            modifier = Modifier.padding(4.dp)
+                        )
+                    }
+                },
+                label = { Text("You", fontWeight = if (youSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 11.sp) },
+                colors = NavigationBarItemDefaults.colors(
+                    indicatorColor = Color.Transparent,
+                    selectedTextColor = ShynaDesign.colors.BrandGreen,
+                    unselectedTextColor = ShynaDesign.colors.TextSecondary
+                )
+            )
+        }
     }
 }
 
+
+
+
+
 @Composable private fun RowScope.LinkTabItem(tab: LinkTab, selected: LinkTab, label: String, icon: ImageVector, onSelect: (LinkTab) -> Unit) {
-    NavigationBarItem(selected = tab == selected, onClick = { onSelect(tab) }, icon = { Icon(icon, label) }, label = { Text(label) }, colors = NavigationBarItemDefaults.colors(selectedIconColor = LinkChipSelectedText, indicatorColor = LinkChipSelected))
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    NavigationBarItem(
+        selected = tab == selected, 
+        onClick = { 
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onSelect(tab) 
+        }, 
+        icon = { Icon(icon, label) }, 
+        label = { Text(label, fontWeight = FontWeight.Medium) }, 
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = ShynaDesign.colors.BrandGreen, 
+            selectedTextColor = ShynaDesign.colors.BrandGreen,
+            indicatorColor = ShynaDesign.colors.BrandGreen.copy(alpha = 0.15f),
+            unselectedIconColor = ShynaDesign.colors.TextSecondary,
+            unselectedTextColor = ShynaDesign.colors.TextSecondary
+        )
+    )
 }
 
-private fun getIconForType(type: MessageType?): ImageVector = when(type) {
-    MessageType.IMAGE -> Icons.Outlined.Image
-    MessageType.VIDEO -> Icons.Outlined.Videocam
-    else -> Icons.Outlined.Chat
-}
-
-private fun formatDate(time: Long?): String {
-    if (time == null || time == 0L) return ""
-    return SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(time))
-}
-
-private fun hasInternet(context: Context): Boolean {
-    val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
-    val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
-    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-}
-
-@Composable private fun MenuItem(text: String, icon: ImageVector, onClick: () -> Unit) { DropdownMenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, null) }, onClick = onClick) }
-
-private data class ChatRowItem(val id: String, val name: String, val lastMessage: LocalChatMessage?, val isOnline: Boolean, val matchSearch: Boolean, val subtitle: String = "", val photoUrl: String? = null)
-
-@OptIn(ExperimentalMaterial3Api::class)
+// End of helper functions
 @Composable
 private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
+    BackHandler { onBack() }
     val context = LocalContext.current
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
@@ -897,11 +1606,11 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                 )
         )
         
-        // Dynamic Glowing Orb
+        val accentBlue = ShynaDesign.colors.AccentBlue
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(LinkBlue.copy(alpha = 0.15f), Color.Transparent),
+                    colors = listOf(accentBlue.copy(alpha = 0.15f), Color.Transparent),
                     center = Offset(size.width * 0.8f, size.height * 0.2f),
                     radius = size.width * 0.6f
                 )
@@ -935,7 +1644,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                     text = "Calling",
                     fontSize = 34.sp,
                     fontWeight = FontWeight.Bold,
-                    color = LinkCyan,
+                    color = ShynaDesign.colors.BrandGreen,
                     letterSpacing = 4.sp,
                     modifier = Modifier.offset(y = (-8).dp)
                 )
@@ -1026,7 +1735,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                     Modifier.padding(16.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Outlined.CalendarMonth, null, tint = LinkCyan, modifier = Modifier.size(22.dp))
+                                    Icon(Icons.Outlined.CalendarMonth, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(22.dp))
                                     Spacer(Modifier.width(12.dp))
                                     val dobText = remember(dob) {
                                         if (dob == null) "Date of Birth" 
@@ -1113,7 +1822,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                 onClick = { /* login link logic */ },
                                 modifier = Modifier.align(Alignment.End)
                             ) {
-                                Text("Fast Login Link", color = LinkCyan.copy(0.8f), fontSize = 13.sp)
+                                Text("Fast Login Link", color = ShynaDesign.colors.BrandGreen.copy(0.8f), fontSize = 13.sp)
                             }
                         }
                     }
@@ -1122,7 +1831,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
 
                     if (loading) {
                         Box(Modifier.height(56.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = LinkCyan, strokeWidth = 3.dp)
+                            CircularProgressIndicator(color = ShynaDesign.colors.BrandGreen, strokeWidth = 3.dp)
                         }
                     } else {
                         Button(
@@ -1192,6 +1901,10 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                             val currentYear = Calendar.getInstance().get(Calendar.YEAR)
                                             val calculatedAge = currentYear - birthYear
 
+                                            val sessionId = SessionManager.getLocalSessionId(context) 
+                                                            ?: SessionManager.startNewSession(context)
+                                            val deviceId = SessionManager.getDeviceId(context)
+
                                             val userMap = hashMapOf(
                                                 "uid" to uid, 
                                                 "firstName" to firstName.trim(),
@@ -1210,6 +1923,8 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                                 "phone" to phone.trim(), 
                                                 "normalizedPhone" to normPhone,
                                                 "isOnline" to true, 
+                                                "activeSessionId" to sessionId,
+                                                "deviceId" to deviceId,
                                                 "createdAt" to Timestamp.now(),
                                                 "updatedAt" to Timestamp.now()
                                             )
@@ -1227,11 +1942,18 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                         if (task.isSuccessful) {
                                             val user = auth.currentUser
                                             val uid = user?.uid ?: return@addOnCompleteListener
+                                            
+                                            val sessionId = SessionManager.getLocalSessionId(context) 
+                                                            ?: SessionManager.startNewSession(context)
+                                            val deviceId = SessionManager.getDeviceId(context)
+
                                             val update = hashMapOf(
                                                 "uid" to uid,
                                                 "email" to email.trim(),
                                                 "normalizedEmail" to email.trim().lowercase(),
                                                 "isOnline" to true,
+                                                "activeSessionId" to sessionId,
+                                                "deviceId" to deviceId,
                                                 "updatedAt" to Timestamp.now()
                                             )
                                             db.collection("users").document(uid).set(update, SetOptions.merge()).addOnCompleteListener { 
@@ -1263,6 +1985,25 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                 letterSpacing = 2.sp,
                                 fontSize = 16.sp
                             )
+                        }
+                        
+                        if (!isSignUp && !isGoogleConfirmationMode) {
+                            TextButton(
+                                onClick = {
+                                    if (email.isNotBlank()) {
+                                        auth.sendPasswordResetEmail(email.trim()).addOnCompleteListener {
+                                            if (it.isSuccessful) {
+                                                Toast.makeText(context, "Reset email sent!", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        Toast.makeText(context, "Enter email first", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            ) {
+                                Text("Forgot Password?", color = Color.White.copy(alpha = 0.7f))
+                            }
                         }
                     }
 
@@ -1297,7 +2038,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                 },
                                 modifier = Modifier.weight(0.9f).height(52.dp),
                                 shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = LinkCyan.copy(alpha = 0.15f))
+                                colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen.copy(alpha = 0.15f))
                             ) {
                                 Text(if (isSignUp) "Login" else "Register", color = Color.White, fontWeight = FontWeight.SemiBold)
                             }
@@ -1345,6 +2086,10 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
     }
 }
 
+
+
+
+
 @Composable
 private fun AuthTextField(
     value: String,
@@ -1370,7 +2115,7 @@ private fun AuthTextField(
             Icon(
                 icon, 
                 null, 
-                tint = if(isFocused) LinkCyan else Color.White.copy(alpha = 0.5f),
+                tint = if(isFocused) ShynaDesign.colors.BrandGreen else Color.White.copy(alpha = 0.5f),
                 modifier = Modifier.size(22.dp)
             ) 
         },
@@ -1392,9 +2137,9 @@ private fun AuthTextField(
         singleLine = true,
         textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = LinkCyan.copy(alpha = 0.6f),
+            focusedBorderColor = ShynaDesign.colors.BrandGreen.copy(alpha = 0.6f),
             unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
-            cursorColor = LinkCyan,
+            cursorColor = ShynaDesign.colors.BrandGreen,
             focusedContainerColor = Color.White.copy(alpha = 0.03f),
             unfocusedContainerColor = Color.Transparent
         )
@@ -1420,25 +2165,6 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
     var editDob by remember { mutableStateOf(currentUser.dob) }
     var editCustomUid by remember { mutableStateOf(currentUser.customUid) }
 
-    // Auto-fill logic for pincode in Edit Profile
-    LaunchedEffect(editPincode) {
-        if (editPincode.length == 6) {
-            try {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val response = java.net.URL("https://api.postalpincode.in/pincode/$editPincode").readText()
-                    if (response.contains("Success")) {
-                        val districtMatch = Regex("\"District\":\"(.*?)\"").find(response)
-                        val stateMatch = Regex("\"State\":\"(.*?)\"").find(response)
-                        districtMatch?.groupValues?.get(1)?.let { editDistrict = it }
-                        stateMatch?.groupValues?.get(1)?.let { editState = it }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Pincode lookup failed in YouPage", e)
-            }
-        }
-    }
-
     var showImagePicker by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var isUploading by remember { mutableStateOf(false) }
@@ -1462,11 +2188,12 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
                 TextButton(onClick = {
                     editDob = datePickerState.selectedDateMillis
                     showDatePicker = false
-                }) { Text("OK") }
+                }) { Text("OK", color = ShynaDesign.colors.BrandGreen) }
             },
             dismissButton = {
-                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
-            }
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel", color = ShynaDesign.colors.TextSecondary) }
+            },
+            colors = DatePickerDefaults.colors(containerColor = ShynaDesign.colors.HeaderBg)
         ) {
             DatePicker(state = datePickerState)
         }
@@ -1479,7 +2206,6 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
             onConfirm = { croppedBitmap ->
                 showImagePicker = false
                 isUploading = true
-                
                 try {
                     val file = File(context.cacheDir, "profile_${System.currentTimeMillis()}.jpg")
                     val out = java.io.FileOutputStream(file)
@@ -1491,17 +2217,24 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
                     ref.putFile(Uri.fromFile(file))
                         .addOnSuccessListener {
                             ref.downloadUrl.addOnSuccessListener { downloadUri ->
+                                // 1. Update Firestore
                                 db.collection("users").document(currentUser.uid)
                                     .update("photoUrl", downloadUri.toString())
                                     .addOnSuccessListener {
-                                        isUploading = false
-                                        Toast.makeText(context, "Profile picture updated!", Toast.LENGTH_SHORT).show()
+                                        // 2. Update Firebase Auth Profile (for persistence and cross-app sync)
+                                        val profileUpdates = com.google.firebase.auth.userProfileChangeRequest {
+                                            photoUri = downloadUri
+                                        }
+                                        com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.updateProfile(profileUpdates)?.addOnCompleteListener {
+                                            isUploading = false
+                                            Toast.makeText(context, "Profile picture updated everywhere!", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                             }
                         }
                         .addOnFailureListener {
                             isUploading = false
-                            Toast.makeText(context, "Upload failed: ${it.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
                         }
                 } catch (e: Exception) {
                     isUploading = false
@@ -1514,8 +2247,9 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
+            .background(ShynaDesign.colors.PrimaryBg)
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(
@@ -1525,18 +2259,18 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
         ) {
             Text(
                 text = if (isEditing) "Edit Profile" else "Your Profile",
-                fontSize = 24.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = LinkText
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Black,
+                color = ShynaDesign.colors.TextPrimary
             )
             
             if (isEditing) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     TextButton(onClick = { isEditing = false }) {
-                        Text("Cancel", color = Color.Gray)
+                        Text("Cancel", color = ShynaDesign.colors.TextSecondary)
                     }
                     if (isSavingProfile) {
-                        CircularProgressIndicator(Modifier.size(24.dp), color = LinkCyan)
+                        CircularProgressIndicator(Modifier.size(24.dp), color = ShynaDesign.colors.BrandGreen)
                     } else {
                         Button(
                             onClick = {
@@ -1566,34 +2300,34 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
                                         Toast.makeText(context, "Update failed", Toast.LENGTH_SHORT).show()
                                     }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = LinkCyan),
-                            shape = RoundedCornerShape(12.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
-                            Text("Save", color = Color.White)
+                            Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
             } else {
                 IconButton(
                     onClick = { isEditing = true },
-                    modifier = Modifier.background(LinkBlue.copy(0.1f), CircleShape)
+                    modifier = Modifier.background(ShynaDesign.colors.BrandGreen.copy(0.15f), CircleShape)
                 ) {
-                    Icon(Icons.Outlined.Edit, "Edit", tint = LinkBlue)
+                    Icon(Icons.Outlined.Edit, "Edit", tint = ShynaDesign.colors.BrandGreen)
                 }
             }
         }
 
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(36.dp))
         
         Box(contentAlignment = Alignment.BottomEnd) {
             Surface(
                 shape = CircleShape,
-                color = Color.LightGray,
+                color = ShynaDesign.colors.SurfaceBg,
                 modifier = Modifier
-                    .size(140.dp)
+                    .size(150.dp)
                     .clickable { imagePickerLauncher.launch("image/*") }
-                    .shadow(8.dp, CircleShape),
-                border = androidx.compose.foundation.BorderStroke(4.dp, Color.White)
+                    .shadow(12.dp, CircleShape),
+                border = BorderStroke(4.dp, ShynaDesign.colors.HeaderBg)
             ) {
                 if (currentUser.photoUrl != null) {
                     AsyncImage(
@@ -1604,75 +2338,68 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
                     )
                 } else {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Person, null, modifier = Modifier.size(70.dp), tint = Color.Gray)
+                        Icon(Icons.Outlined.Person, null, modifier = Modifier.size(80.dp), tint = ShynaDesign.colors.TextSecondary)
                     }
                 }
             }
             if (isUploading) {
-                CircularProgressIndicator(Modifier.size(140.dp), color = LinkCyan, strokeWidth = 4.dp)
+                CircularProgressIndicator(Modifier.size(150.dp), color = ShynaDesign.colors.BrandGreen, strokeWidth = 5.dp)
             }
             Surface(
                 shape = CircleShape,
-                color = LinkCyan,
+                color = ShynaDesign.colors.BrandGreen,
                 modifier = Modifier
-                    .size(42.dp)
-                    .offset(x = (-4).dp, y = (-4).dp)
+                    .size(44.dp)
+                    .offset(x = (-2).dp, y = (-2).dp)
                     .clickable { imagePickerLauncher.launch("image/*") }
-                    .shadow(4.dp, CircleShape)
+                    .shadow(6.dp, CircleShape),
+                border = BorderStroke(2.dp, ShynaDesign.colors.PrimaryBg)
             ) {
-                Icon(Icons.Outlined.PhotoCamera, null, tint = Color.White, modifier = Modifier.padding(10.dp))
+                Icon(Icons.Outlined.PhotoCamera, null, tint = Color.White, modifier = Modifier.padding(11.dp))
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(28.dp))
         
+        if (!isEditing) {
+            Text(currentUser.name, fontSize = 28.sp, fontWeight = FontWeight.Black, color = ShynaDesign.colors.TextPrimary)
+            Text(if (currentUser.customUid.isNotEmpty()) "@${currentUser.customUid}" else "No User ID set", color = ShynaDesign.colors.BrandGreen, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        Spacer(Modifier.height(44.dp))
+
         if (isEditing) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 EditField(value = editFirstName, onValueChange = { editFirstName = it }, label = "First Name", Modifier.weight(1f))
                 EditField(value = editLastName, onValueChange = { editLastName = it }, label = "Last Name", Modifier.weight(1f))
             }
-        } else {
-            Text(currentUser.name, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = LinkText)
-            Text(if (currentUser.customUid.isNotEmpty()) "@${currentUser.customUid}" else "No User ID set", color = LinkMuted, fontSize = 16.sp)
-        }
-
-        Spacer(Modifier.height(40.dp))
-
-        if (isEditing) {
             EditField(value = editCustomUid, onValueChange = { editCustomUid = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = "User ID (Handle)")
             EditField(value = editPhone, onValueChange = { editPhone = it }, label = "Mobile Number", keyboardType = KeyboardType.Phone)
             
-            // Editable DOB
             Surface(
                 onClick = { showDatePicker = true },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 shape = RoundedCornerShape(16.dp),
-                color = Color.White,
-                shadowElevation = 1.dp,
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F2F5))
+                color = ShynaDesign.colors.SurfaceBg,
+                border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
             ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.CalendarMonth, null, tint = LinkBlue, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.width(16.dp))
+                Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.CalendarMonth, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(18.dp))
                     val formattedDob = remember(editDob) {
                         if (editDob == null) "Select Birth Date"
-                        else SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(editDob!!))
+                        else SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(editDob!!))
                     }
-                    Text(
-                        text = formattedDob,
-                        color = LinkText,
-                        fontSize = 16.sp
-                    )
+                    Text(text = formattedDob, color = ShynaDesign.colors.TextPrimary, fontSize = 16.sp)
                 }
             }
 
             EditField(value = editPincode, onValueChange = { editPincode = it }, label = "Pincode", keyboardType = KeyboardType.Number)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 EditField(value = editDistrict, onValueChange = { editDistrict = it }, label = "District", Modifier.weight(1f))
                 EditField(value = editState, onValueChange = { editState = it }, label = "State", Modifier.weight(1f))
             }
-            
-            ProfileInfoCard(label = "Email Address (Fixed)", value = currentUser.email, icon = Icons.Outlined.AlternateEmail)
+            ProfileInfoCard(label = "Email Address (Verified)", value = currentUser.email, icon = Icons.Outlined.AlternateEmail)
         } else {
             ProfileInfoCard(label = "User ID", value = currentUser.customUid.ifEmpty { "Not set" }, icon = Icons.Outlined.AccountCircle)
             ProfileInfoCard(label = "Date of Birth", value = currentUser.dob?.let { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it)) } ?: "Not set", icon = Icons.Outlined.CalendarMonth)
@@ -1682,39 +2409,47 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
             ProfileInfoCard(label = "App Version", value = "v$appVersion Premium", icon = Icons.Outlined.Verified)
         }
 
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(56.dp))
 
         if (!isEditing) {
             Button(
                 onClick = onLogout,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
+                modifier = Modifier.fillMaxWidth().height(60.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53E36).copy(alpha = 0.9f)),
-                shape = RoundedCornerShape(16.dp),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                shape = RoundedCornerShape(18.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
             ) {
-                Icon(Icons.AutoMirrored.Outlined.Logout, null)
-                Spacer(Modifier.width(12.dp))
-                Text("LOGOUT FROM SHYNA", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Icon(Icons.AutoMirrored.Outlined.Logout, null, modifier = Modifier.size(24.dp))
+                Spacer(Modifier.width(14.dp))
+                Text("LOGOUT FROM SHYNA", fontWeight = FontWeight.ExtraBold, letterSpacing = 1.5.sp, fontSize = 15.sp)
             }
         }
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(40.dp))
     }
 }
+
+
+
+
 
 @Composable
 private fun EditField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier, keyboardType: KeyboardType = KeyboardType.Text) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 6.dp),
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         singleLine = true,
+        textStyle = TextStyle(color = ShynaDesign.colors.TextPrimary, fontSize = 16.sp),
         colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = LinkCyan,
-            unfocusedBorderColor = Color.LightGray,
-            focusedLabelColor = LinkCyan
+            focusedBorderColor = ShynaDesign.colors.BrandGreen,
+            unfocusedBorderColor = ShynaDesign.colors.DividerColor,
+            focusedLabelColor = ShynaDesign.colors.BrandGreen,
+            unfocusedLabelColor = ShynaDesign.colors.TextSecondary,
+            focusedContainerColor = ShynaDesign.colors.SurfaceBg,
+            unfocusedContainerColor = ShynaDesign.colors.SurfaceBg
         )
     )
 }
@@ -1722,26 +2457,30 @@ private fun EditField(value: String, onValueChange: (String) -> Unit, label: Str
 @Composable
 private fun ProfileInfoCard(label: String, value: String, icon: ImageVector) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = Color.White,
-        shadowElevation = 1.dp,
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F2F5))
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = ShynaDesign.colors.SurfaceBg,
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
     ) {
-        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, color = LinkBlue.copy(0.1f), modifier = Modifier.size(44.dp)) {
+        Row(Modifier.padding(22.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = CircleShape, color = ShynaDesign.colors.BrandGreen.copy(0.12f), modifier = Modifier.size(48.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(icon, null, tint = LinkBlue, modifier = Modifier.size(22.dp))
+                    Icon(icon, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(24.dp))
                 }
             }
-            Spacer(Modifier.width(18.dp))
+            Spacer(Modifier.width(20.dp))
             Column {
-                Text(label, fontSize = 13.sp, color = LinkMuted, fontWeight = FontWeight.Medium)
-                Text(value, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = LinkText)
+                Text(label, fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                Text(value, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = ShynaDesign.colors.TextPrimary)
             }
         }
     }
 }
+
+
+
+
 
 @Composable
 private fun ProfileImageEditorDialog(
@@ -1750,6 +2489,8 @@ private fun ProfileImageEditorDialog(
     onConfirm: (android.graphics.Bitmap) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     var rotation by remember { mutableFloatStateOf(0f) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -1848,7 +2589,7 @@ private fun ProfileImageEditorDialog(
                     TextButton(onClick = onDismiss) { Text("CANCEL", color = Color.White) }
                     Button(
                         onClick = {
-                            val bitmap = try {
+                            val originalBitmap = try {
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                                     val source = android.graphics.ImageDecoder.createSource(context.contentResolver, imageUri)
                                     android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
@@ -1860,10 +2601,47 @@ private fun ProfileImageEditorDialog(
                                 }
                             } catch (e: Exception) { null }
                             
-                            if (bitmap != null) onConfirm(bitmap)
-                            else Toast.makeText(context, "Error processing image", Toast.LENGTH_SHORT).show()
+                            if (originalBitmap != null) {
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        // 1. Apply transformations
+                                        val matrix = android.graphics.Matrix()
+                                        matrix.postRotate(rotation)
+                                        matrix.postScale(scale, scale)
+                                        val transformed = android.graphics.Bitmap.createBitmap(originalBitmap, 0, 0, originalBitmap.width, originalBitmap.height, matrix, true)
+                                        
+                                        // 2. Compress and save to cache
+                                        val file = File(context.cacheDir, "dp_${auth.currentUser?.uid}.jpg")
+                                        val out = java.io.FileOutputStream(file)
+                                        transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                                        out.close()
+                                        
+                                        // 3. Upload to Storage
+                                        val storage = FirebaseStorage.getInstance()
+                                        val ref = storage.reference.child("profiles/${auth.currentUser?.uid}.jpg")
+                                        ref.putFile(Uri.fromFile(file)).await()
+                                        val downloadUrl = ref.downloadUrl.await().toString()
+                                        
+                                        // 4. Update Firestore
+                                        val uid = auth.currentUser?.uid
+                                        if (uid != null) {
+                                            FirebaseFirestore.getInstance().collection("users").document(uid)
+                                                .update("photoUrl", downloadUrl).await()
+                                        }
+
+                                        withContext(Dispatchers.Main) {
+                                            onConfirm(transformed)
+                                            onDismiss()
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, "Failed to update profile picture", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = LinkCyan),
+                        colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text("SET AS DP", fontWeight = FontWeight.Bold, color = Color.White)
@@ -1880,13 +2658,13 @@ private fun ProfileImageEditorDialog(
 @Composable
 private fun SmartChatDetailScreen(
     peerId: String, 
-    prefs: android.content.SharedPreferences, 
     userId: String, 
-    allMessages: List<LocalChatMessage>, 
     allRealUsers: List<RealUser>, 
+    connection: Connection?,
     onBack: () -> Unit, 
     onOpenMedia: (LocalChatMessage) -> Unit,
-    onLocationClick: (String) -> Unit = {}
+    onLocationClick: (String) -> Unit = {},
+    onMessageInfo: (LocalChatMessage) -> Unit = {}
 ) {
     val context = LocalContext.current
     val db = remember { FirebaseFirestore.getInstance() }
@@ -1898,77 +2676,106 @@ private fun SmartChatDetailScreen(
     val chatMessages = remember { mutableStateListOf<LocalChatMessage>() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val callManager = remember { com.example.callruleblocker.call.LiveKitCallManager(context) }
+
+    var selectedMessageIds by remember { mutableStateOf(setOf<String>()) }
+    var replyMessage by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var isSearchMode by remember { mutableStateOf(false) }
+    var chatSearchQuery by remember { mutableStateOf("") }
+    val isSelectionMode = selectedMessageIds.isNotEmpty()
+    val sheetState = rememberModalBottomSheetState()
+    val fusedLocationClient = remember { com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context) }
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showContactPicker by remember { mutableStateOf(false) }
+    var messageMenuTarget by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var showDeleteDialogTarget by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
     var isUploadingMedia by remember { mutableStateOf(false) }
     var currentRecordingFile by remember { mutableStateOf<File?>(null) }
+    var isEmojiPickerOpen by remember { mutableStateOf(false) }
+    var reactionTargetMsgId by remember { mutableStateOf<String?>(null) }
+
+    BackHandler { 
+        if (reactionTargetMsgId != null) reactionTargetMsgId = null
+        else if (isEmojiPickerOpen) isEmojiPickerOpen = false
+        else if (isSelectionMode) selectedMessageIds = emptySet()
+        else if (isSearchMode) isSearchMode = false
+        else onBack() 
+    }
+
+    val isAtBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
 
     // REAL-TIME FIRESTORE LISTENER
     DisposableEffect(chatId) {
         val listener = db.collection("chats").document(chatId).collection("messages")
-            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .addSnapshotListener { snapshots, error ->
-                if (error != null) {
-                    Log.e(TAG, "Chat listener error: ${error.message}")
-                    return@addSnapshotListener
-                }
+                if (error != null) return@addSnapshotListener
                 val newMessages = snapshots?.documents?.mapNotNull { doc ->
                     val sId = doc.getString("senderId") ?: ""
+                    val deletedFor = doc.get("deletedFor") as? List<String> ?: emptyList()
+                    if (deletedFor.contains(userId)) return@mapNotNull null
                     LocalChatMessage(
                         id = doc.id,
+                        chatId = chatId,
                         text = doc.getString("text") ?: "",
                         mine = sId == userId,
                         time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
                         peerName = if (sId == userId) peerId else userId,
                         type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
                         metadata = doc.getString("metadata"),
-                        senderId = sId
+                        status = try { MessageStatus.valueOf(doc.getString("status") ?: "SENT") } catch (e: Exception) { MessageStatus.SENT },
+                        senderId = sId,
+                        receiverId = doc.getString("receiverId") ?: "",
+                        isRead = doc.getBoolean("isRead") ?: false,
+                        isDeletedForEveryone = doc.getBoolean("isDeletedForEveryone") ?: false,
+                        deletedFor = deletedFor,
+                        reactions = (doc.get("reactions") as? Map<String, String>) ?: emptyMap()
                     )
                 } ?: emptyList()
                 chatMessages.clear()
                 chatMessages.addAll(newMessages)
-                
-                // Auto scroll to bottom
-                if (newMessages.isNotEmpty()) {
-                    scope.launch {
-                        listState.animateScrollToItem(newMessages.size - 1)
-                    }
-                }
             }
         onDispose { listener.remove() }
     }
 
+    val toggleReaction = { msgId: String, emoji: String ->
+        val msgRef = db.collection("chats").document(chatId).collection("messages").document(msgId)
+        db.runTransaction { transaction ->
+            val snapshot = transaction.get(msgRef)
+            val currentReactions = (snapshot.get("reactions") as? Map<String, String>)?.toMutableMap() ?: mutableMapOf()
+            if (currentReactions[userId] == emoji) currentReactions.remove(userId)
+            else currentReactions[userId] = emoji
+            transaction.update(msgRef, "reactions", currentReactions)
+            null
+        }
+    }
+
     val sendMessage = { msgText: String, type: MessageType, metadata: String? ->
         if (msgText.isNotBlank() || type != MessageType.TEXT) {
+            val now = com.google.firebase.Timestamp.now()
             val message = hashMapOf(
                 "senderId" to userId,
                 "receiverId" to peerId,
                 "text" to msgText,
                 "type" to type.name,
                 "metadata" to metadata,
-                "timestamp" to com.google.firebase.Timestamp.now()
+                "timestamp" to now,
+                "status" to MessageStatus.SENT.name,
+                "isRead" to false
             )
-
             val chatUpdate = hashMapOf(
                 "user1" to if (userId < peerId) userId else peerId,
                 "user2" to if (userId < peerId) peerId else userId,
-                "lastMessage" to when(type) {
-                    MessageType.TEXT -> msgText
-                    MessageType.LOCATION -> "📍 Location"
-                    MessageType.FILE -> "📄 Document"
-                    MessageType.CONTACT -> "👤 Contact"
-                    MessageType.IMAGE -> "📷 Image"
-                    else -> "New message"
-                },
+                "lastMessage" to msgText,
                 "type" to type.name,
-                "timestamp" to com.google.firebase.Timestamp.now()
+                "timestamp" to now,
+                "unreadCount_$peerId" to FieldValue.increment(1)
             )
-
             db.collection("chats").document(chatId).set(chatUpdate, SetOptions.merge())
             db.collection("chats").document(chatId).collection("messages").add(message)
-                .addOnSuccessListener { text = "" }
-                .addOnFailureListener { Toast.makeText(context, "Failed to send", Toast.LENGTH_SHORT).show() }
+            text = ""
         }
     }
 
@@ -1976,7 +2783,6 @@ private fun SmartChatDetailScreen(
     var isRecording by remember { mutableStateOf(false) }
     val recorder = remember { AudioRecorder(context) }
     var recordingDuration by remember { mutableLongStateOf(0L) }
-    
     LaunchedEffect(isRecording) {
         if (isRecording) {
             val start = System.currentTimeMillis()
@@ -1984,255 +2790,313 @@ private fun SmartChatDetailScreen(
                 recordingDuration = System.currentTimeMillis() - start
                 delay(100)
             }
-        } else {
-            recordingDuration = 0L
         }
     }
 
     val uploadAndSend = { uri: Uri, type: MessageType, label: String ->
         isUploadingMedia = true
-        val storageRef = FirebaseStorage.getInstance().reference
-        val fileRef = storageRef.child("chat_media/${chatId}/${System.currentTimeMillis()}")
+        val storage = FirebaseStorage.getInstance()
+        val storageRef = storage.reference
+        val fileName = "${System.currentTimeMillis()}_${uri.lastPathSegment ?: "file"}"
+        val fileRef = storageRef.child("chat_media/$chatId/$fileName")
         
-        fileRef.putFile(uri).addOnSuccessListener {
-            fileRef.downloadUrl.addOnSuccessListener { downloadUri ->
-                sendMessage(label, type, downloadUri.toString())
-                isUploadingMedia = false
+        scope.launch(Dispatchers.IO) {
+            try {
+                var finalUri = uri
+                if (type == MessageType.IMAGE) {
+                    val bitmap = android.graphics.BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri))
+                    if (bitmap != null) {
+                        val file = File(context.cacheDir, "temp_comp_${System.currentTimeMillis()}.jpg")
+                        val out = java.io.FileOutputStream(file)
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, out)
+                        out.close()
+                        finalUri = Uri.fromFile(file)
+                    }
+                }
+
+                withContext(Dispatchers.Main) {
+                    fileRef.putFile(finalUri)
+                        .continueWithTask { task ->
+                            if (!task.isSuccessful) task.exception?.let { throw it }
+                            fileRef.downloadUrl
+                        }
+                        .addOnSuccessListener { downloadUri ->
+                            sendMessage(label, type, downloadUri.toString())
+                            isUploadingMedia = false
+                        }
+                        .addOnFailureListener { e ->
+                            isUploadingMedia = false
+                            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
+                        }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isUploadingMedia = false
+                    Toast.makeText(context, "Processing failed", Toast.LENGTH_SHORT).show()
+                }
             }
-        }.addOnFailureListener {
-            isUploadingMedia = false
-            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
         }
     }
 
-    val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { uploadAndSend(it, MessageType.FILE, it.lastPathSegment ?: "Document") }
-    }
-    
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { uploadAndSend(it, MessageType.IMAGE, "Shared an image") }
+        uri?.let {
+            val mimeType = context.contentResolver.getType(it)
+            val type = if (mimeType?.startsWith("video") == true) MessageType.VIDEO else MessageType.IMAGE
+            uploadAndSend(it, type, if (type == MessageType.VIDEO) "Video" else "Shared Image")
+        }
     }
-    
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        bitmap?.let { 
-            // Save bitmap to file first
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { 
+        it?.let { 
             val file = File(context.cacheDir, "cam_${System.currentTimeMillis()}.jpg")
             val out = java.io.FileOutputStream(file)
             it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
             out.close()
-            uploadAndSend(Uri.fromFile(file), MessageType.IMAGE, "Photo from Camera")
+            uploadAndSend(Uri.fromFile(file), MessageType.IMAGE, "Photo")
+        } 
+    }
+    val contactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        uri?.let {
+            val cursor = context.contentResolver.query(it, null, null, null, null)
+            cursor?.use { c ->
+                if (c.moveToFirst()) {
+                    val nameIndex = c.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME)
+                    if (nameIndex != -1) {
+                        val name = c.getString(nameIndex)
+                        sendMessage(name, MessageType.CONTACT, null)
+                    }
+                }
+            }
         }
     }
-    
-    val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { uploadAndSend(it, MessageType.VOICE, "Voice Note") }
+
+    val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let { uploadAndSend(it, MessageType.FILE, "Document") } }
+    val updateConnectionStatus = { newStatus: ConnectionStatus, blockedBy: String? ->
+        val data = hashMapOf("status" to newStatus.name, "blockedBy" to blockedBy, "updatedAt" to FieldValue.serverTimestamp())
+        db.collection("connections").document(chatId).set(data, SetOptions.merge())
     }
 
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = ShynaDesign.colors.PrimaryBg,
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(shape = CircleShape, modifier = Modifier.size(38.dp), color = Color.White.copy(0.2f)) {
-                            if (peer?.photoUrl != null) {
-                                AsyncImage(model = peer.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
-                            } else {
-                                Icon(Icons.Outlined.Person, null, tint = Color.White, modifier = Modifier.padding(8.dp))
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            val displayName = if (peer?.customUid?.isNotEmpty() == true) "$peerName (@${peer.customUid})" else peerName
-                            Text(displayName, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            Text(
-                                text = if (peer?.isOnline == true) "online" else "last seen recently",
-                                fontSize = 11.sp,
-                                color = if (peer?.isOnline == true) Color(0xFFB3E5FC) else Color.White.copy(0.7f)
+            Column(Modifier.statusBarsPadding()) {
+                if (isSelectionMode) {
+                    SelectionHeader(
+                        selectedCount = selectedMessageIds.size,
+                        onClose = { selectedMessageIds = emptySet() },
+                        onReply = { 
+                            replyMessage = chatMessages.find { it.id == selectedMessageIds.first() }
+                            selectedMessageIds = emptySet()
+                        },
+                        onStar = { },
+                        onDelete = { showDeleteDialogTarget = chatMessages.find { it.id == selectedMessageIds.first() } },
+                        onForward = { },
+                        onInfo = {
+                            onMessageInfo(chatMessages.find { it.id == selectedMessageIds.first() }!!)
+                            selectedMessageIds = emptySet()
+                        },
+                        canReply = selectedMessageIds.size == 1,
+                        canInfo = selectedMessageIds.size == 1 && chatMessages.find { it.id == selectedMessageIds.first() }?.mine == true
+                    )
+                } else if (isSearchMode) {
+                    ChatSearchHeader(
+                        query = chatSearchQuery, 
+                        onQueryChange = { chatSearchQuery = it }, 
+                        onClose = { isSearchMode = false },
+                        onNext = { },
+                        onPrev = { }
+                    )
+                }
+else {
+                    ChatHeader(
+                        peer = peer,
+                        peerName = peerName,
+                        status = if (peer?.isOnline == true) "online" else "last seen recently",
+                        onBack = onBack,
+                        onProfileClick = { },
+                        onVideoCall = { 
+                            val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                            com.example.callruleblocker.call.CallSignalingManager.startCall(
+                                callerUid = userId, callerName = auth.currentUser?.displayName ?: "User", callerPhoto = auth.currentUser?.photoUrl?.toString(),
+                                receiverUid = peerId, type = com.example.callruleblocker.call.AppCallType.VIDEO,
+                                onCallCreated = { call ->
+                                    scope.launch {
+                                        callManager.notifyReceiver(call)
+                                    }
+                                    context.startActivity(Intent(context, com.example.callruleblocker.AppCallActivity::class.java).apply { putExtra("callId", call.id); putExtra("isIncoming", false) })
+                                },
+                                onError = { }
                             )
-                        }
-                    }
-                },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null) } },
-                actions = {
-    IconButton(onClick = { /* Call */ }) { Icon(Icons.Outlined.Call, null) }
-    IconButton(onClick = { /* More */ }) { Icon(Icons.Outlined.MoreVert, null) }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF005D4B), 
-                    titleContentColor = Color.White, 
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
-                )
-            )
+                        },
+                        onVoiceCall = { 
+                            val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                            com.example.callruleblocker.call.CallSignalingManager.startCall(
+                                callerUid = userId, callerName = auth.currentUser?.displayName ?: "User", callerPhoto = auth.currentUser?.photoUrl?.toString(),
+                                receiverUid = peerId, type = com.example.callruleblocker.call.AppCallType.VOICE,
+                                onCallCreated = { call ->
+                                    scope.launch {
+                                        callManager.notifyReceiver(call)
+                                    }
+                                    context.startActivity(Intent(context, com.example.callruleblocker.AppCallActivity::class.java).apply { putExtra("callId", call.id); putExtra("isIncoming", false) })
+                                },
+                                onError = { }
+                            )
+                        },
+                        onMenuClick = { menuOpen = true },
+                        menuOpen = menuOpen,
+                        onMenuDismiss = { menuOpen = false },
+                        onSearchClick = { isSearchMode = true; menuOpen = false },
+                        onBlockClick = { updateConnectionStatus(ConnectionStatus.BLOCKED, userId); menuOpen = false },
+                        isBlocked = connection?.status == ConnectionStatus.BLOCKED && connection.blockedBy == userId,
+                        onUnblockClick = { updateConnectionStatus(ConnectionStatus.NONE, null); menuOpen = false }
+                    )
+                }
+            }
         },
         bottomBar = {
             Column {
+                if (replyMessage != null) ReplyPreview(message = replyMessage!!, onCancel = { replyMessage = null })
                 if (showAttachmentMenu) {
-                    PremiumAttachmentHub(
-                        onLocation = { 
-                            onLocationClick(peerId)
-                            showAttachmentMenu = false 
-                        },
-                        onDocument = { 
-                            docLauncher.launch("*/*")
-                            showAttachmentMenu = false 
-                        },
-                        onContact = { 
-                            showContactPicker = true
-                            showAttachmentMenu = false 
-                        },
-                        onGallery = { 
-                            galleryLauncher.launch("image/*")
-                            showAttachmentMenu = false 
-                        },
-                        onCamera = { 
-                            cameraLauncher.launch(null)
-                            showAttachmentMenu = false 
-                        },
-                        onAudio = { 
-                            audioLauncher.launch("audio/*")
-                            showAttachmentMenu = false 
-                        }
-                    )
-                }
-                
-                Surface(color = Color.White, shadowElevation = 8.dp) {
-                    Row(
-                        Modifier.padding(horizontal = 8.dp, vertical = 10.dp).imePadding(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(24.dp),
-                            color = Color(0xFFF0F2F5)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
-                                IconButton(onClick = { /* Emoji */ }) { Icon(Icons.Outlined.EmojiEmotions, null, tint = Color.Gray) }
-                                BasicTextField(
-                                    value = text,
-                                    onValueChange = { text = it },
-                                    modifier = Modifier.weight(1f).padding(vertical = 12.dp),
-                                    textStyle = TextStyle(fontSize = 16.sp),
-                                    decorationBox = { innerTextField ->
-                                        if (text.isEmpty()) Text("Message", color = Color.Gray)
-                                        innerTextField()
-                                    }
-                                )
-                                IconButton(onClick = { showAttachmentMenu = !showAttachmentMenu }) { 
-                                    Icon(
-                                        imageVector = if (showAttachmentMenu) Icons.Outlined.Close else Icons.Outlined.AttachFile, 
-                                        null, 
-                                        tint = Color.Gray,
-                                        modifier = Modifier.graphicsLayer { rotationZ = if (showAttachmentMenu) 0f else -45f }
-                                    ) 
-                                }
-                            }
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        FloatingActionButton(
-                            onClick = { 
-                                if (text.isNotBlank()) {
-                                    sendMessage(text, MessageType.TEXT, null)
-                                } else {
-                                    if (isRecording) {
-                                        recorder.stop()
-                                        currentRecordingFile?.let { file ->
-                                            uploadAndSend(Uri.fromFile(file), MessageType.VOICE, "Voice Note")
+                    ModalBottomSheet(onDismissRequest = { showAttachmentMenu = false }, sheetState = sheetState) {
+                        PremiumAttachmentHub(
+                            onLocation = { 
+                                try {
+                                    fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null)
+                                        .addOnSuccessListener { loc ->
+                                            if (loc != null) {
+                                                sendMessage("📍 Live Location", MessageType.LOCATION, "${loc.latitude},${loc.longitude}")
+                                            } else {
+                                                Toast.makeText(context, "Enhancing GPS accuracy...", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
-                                        isRecording = false
-                                        currentRecordingFile = null
-                                    } else {
-                                        val file = File(context.cacheDir, "rec_${System.currentTimeMillis()}.m4a")
-                                        currentRecordingFile = file
-                                        recorder.start(file)
-                                        isRecording = true
-                                    }
+                                } catch (e: SecurityException) {
+                                    Toast.makeText(context, "Location permission required", Toast.LENGTH_SHORT).show()
                                 }
+                                showAttachmentMenu = false 
                             },
-                            modifier = Modifier.size(48.dp),
-                            shape = CircleShape,
-                            containerColor = if (isRecording) Color.Red else Color(0xFF00A884),
-                            contentColor = Color.White,
-                            elevation = FloatingActionButtonDefaults.elevation(0.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (text.isBlank()) {
-                                    if (isRecording) Icons.Filled.Pause else Icons.Outlined.Mic
-                                } else Icons.AutoMirrored.Outlined.Send, 
-                                null
-                            )
-                        }
-                    }
-                    if (isRecording) {
-                        Text(
-                            text = "Recording: ${recordingDuration / 1000}s",
-                            color = Color.Red,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(start = 70.dp, bottom = 8.dp)
+                            onDocument = { docLauncher.launch("*/*"); showAttachmentMenu = false },
+                            onContact = { contactLauncher.launch(null); showAttachmentMenu = false },
+                            onGallery = { galleryLauncher.launch("image/* video/*"); showAttachmentMenu = false },
+                            onPoll = { 
+                                // Integrated Poll Logic
+                                sendMessage("📊 New Poll", MessageType.POLL, "Poll Question?")
+                                showAttachmentMenu = false 
+                            },
+                            onEvent = { 
+                                // Integrated Event Logic
+                                sendMessage("📅 New Event", MessageType.EVENT, "Event Title")
+                                showAttachmentMenu = false 
+                            },
+                            onAudio = { docLauncher.launch("audio/*"); showAttachmentMenu = false }
                         )
                     }
+                }
+                ChatComposer(
+                    text = text, onTextChange = { text = it }, isRecording = isRecording, recordingDuration = recordingDuration,
+                    onAttachClick = { showAttachmentMenu = !showAttachmentMenu }, onCameraClick = { cameraLauncher.launch(null) },
+                    onSendClick = { if (text.isNotBlank()) { sendMessage(text, MessageType.TEXT, null); replyMessage = null } },
+                    onMicClick = {
+                        if (isRecording) {
+                            recorder.stop()
+                            currentRecordingFile?.let { uploadAndSend(Uri.fromFile(it), MessageType.VOICE, "Voice Note") }
+                            isRecording = false
+                        } else {
+                            val file = File(context.cacheDir, "rec_${System.currentTimeMillis()}.m4a")
+                            currentRecordingFile = file; recorder.start(file); isRecording = true
+                        }
+                    },
+                    placeholder = "Message",
+                    onEmojiClick = { isEmojiPickerOpen = !isEmojiPickerOpen },
+                    isEmojiPickerOpen = isEmojiPickerOpen
+                )
+                if (isEmojiPickerOpen) {
+                    EmojiPicker(onEmojiSelected = { text += it })
                 }
             }
         }
     ) { padding ->
-        Box(
-            Modifier.padding(padding).fillMaxSize()
-        ) {
-            // High-end Premium Chat Background (Pattern-like)
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRect(color = Color(0xFFEFE7DE))
-                // Subtle pattern lines
-                val stroke = 1.dp.toPx()
-                for (i in 0..size.width.toInt() step 60) {
-                    drawLine(Color.White.copy(0.15f), Offset(i.toFloat(), 0f), Offset(i.toFloat(), size.height), stroke)
-                }
-                for (i in 0..size.height.toInt() step 60) {
-                    drawLine(Color.White.copy(0.15f), Offset(0f, i.toFloat()), Offset(size.width, i.toFloat()), stroke)
+        Box(Modifier.padding(padding).fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), reverseLayout = true) {
+                val today = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date())
+                val yesterday = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(System.currentTimeMillis() - 86400000))
+                val grouped = chatMessages.groupBy { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it.time)) }
+                grouped.forEach { (date, messages) ->
+                    items(messages, key = { it.id }) { msg ->
+                        ShynaMessageBubble(
+                            msg = msg, 
+                            isSelected = selectedMessageIds.contains(msg.id),
+                            isSelectionMode = isSelectionMode,
+                            onLocationClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))) },
+                            onMediaClick = { onOpenMedia(it) },
+                            onLongClick = { reactionTargetMsgId = msg.id },
+                            onClick = { 
+                                if (isSelectionMode) {
+                                    selectedMessageIds = if (selectedMessageIds.contains(msg.id)) selectedMessageIds - msg.id else selectedMessageIds + msg.id 
+                                }
+                            },
+                            onReaction = { toggleReaction(msg.id, it) }
+                        )
+                    }
+                    item { DateDivider(date = if (date == today) "Today" else if (date == yesterday) "Yesterday" else date) }
                 }
             }
             
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                items(chatMessages) { msg ->
-                    ShynaMessageBubble(
-                        msg = msg,
-                        onLocationClick = { 
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))
-                            context.startActivity(intent)
-                        },
-                        onMediaClick = { onOpenMedia(it) }
-                    )
-                }
+            if (reactionTargetMsgId != null) {
+                ReactionPicker(
+                    onEmojiSelected = { 
+                        toggleReaction(reactionTargetMsgId!!, it)
+                        reactionTargetMsgId = null
+                    },
+                    onDismiss = { reactionTargetMsgId = null }
+                )
+            }
+            if (!isAtBottom) {
+                FloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).size(42.dp),
+                    containerColor = ShynaDesign.colors.HeaderBg, contentColor = ShynaDesign.colors.BrandGreen, shape = CircleShape
+                ) { Icon(Icons.Outlined.KeyboardArrowDown, null) }
             }
         }
+    }
+
+    if (messageMenuTarget != null) {
+        AlertDialog(
+            onDismissRequest = { messageMenuTarget = null },
+            confirmButton = { TextButton(onClick = { messageMenuTarget = null }) { Text("Close") } },
+            title = { Text("Options") },
+            text = {
+                Column {
+                    ListItem(headlineContent = { Text("Message Info") }, modifier = Modifier.clickable { onMessageInfo(messageMenuTarget!!); messageMenuTarget = null })
+                    ListItem(headlineContent = { Text("Delete") }, modifier = Modifier.clickable { showDeleteDialogTarget = messageMenuTarget; messageMenuTarget = null })
+                }
+            }
+        )
+    }
+
+    if (showDeleteDialogTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialogTarget = null },
+            title = { Text("Delete message?") },
+            text = { Text("Are you sure you want to delete this message?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    db.collection("chats").document(chatId).collection("messages").document(showDeleteDialogTarget!!.id).delete()
+                    showDeleteDialogTarget = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteDialogTarget = null }) { Text("Cancel") } }
+        )
     }
 
     if (showContactPicker) {
         AlertDialog(
             onDismissRequest = { showContactPicker = false },
-            title = { Text("Select Contact to Share") },
+            title = { Text("Share Contact") },
             text = {
                 LazyColumn {
                     items(allRealUsers) { u ->
-                        if (u.uid != userId) {
-                            ShynaContactRow(
-                                name = u.name,
-                                subtitle = u.email,
-                                preview = "Share this contact",
-                                icon = Icons.Outlined.AccountBox,
-                                date = "",
-                                online = u.isOnline,
-                                photoUrl = u.photoUrl,
-                                onClick = {
-                                    sendMessage(u.name, MessageType.CONTACT, u.uid)
-                                    showContactPicker = false
-                                }
-                            )
-                        }
+                        ListItem(headlineContent = { Text(u.name) }, modifier = Modifier.clickable { sendMessage(u.name, MessageType.CONTACT, u.uid); showContactPicker = false })
                     }
                 }
             },
@@ -2241,154 +3105,254 @@ private fun SmartChatDetailScreen(
     }
 }
 
+
+
+
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ShynaMessageBubble(
     msg: LocalChatMessage, 
+    isSelected: Boolean = false,
+    isSelectionMode: Boolean = false,
     onLocationClick: (String) -> Unit = {}, 
-    onContactClick: (String) -> Unit = {},
-    onMediaClick: (LocalChatMessage) -> Unit = {}
+    onMediaClick: (LocalChatMessage) -> Unit = {},
+    onLongClick: () -> Unit = {},
+    onClick: () -> Unit = {},
+    onReaction: (String) -> Unit = {}
 ) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val context = LocalContext.current
-    val alignment = if (msg.mine) Alignment.End else Alignment.Start
-    val color = if (msg.mine) Color(0xFFD9FDD3) else Color.White
+    
+    // PREMIUM GRADIENT FOR OUTGOING
+    val outgoingGradient = Brush.linearGradient(
+        colors = listOf(ShynaDesign.colors.BrandGreen, Color(0xFF00C49F))
+    )
+    
     val shape = RoundedCornerShape(
-        topStart = 12.dp,
-        topEnd = 12.dp,
-        bottomStart = if (msg.mine) 12.dp else 0.dp,
-        bottomEnd = if (msg.mine) 0.dp else 12.dp
+        topStart = 18.dp,
+        topEnd = 18.dp,
+        bottomStart = if (msg.mine) 18.dp else 4.dp,
+        bottomEnd = if (msg.mine) 4.dp else 18.dp
     )
 
-    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = alignment) {
-        Surface(
-            color = color,
-            shape = shape,
-            shadowElevation = 1.dp,
-            modifier = Modifier.widthIn(max = 300.dp).clickable { 
-                when(msg.type) {
-                    MessageType.LOCATION -> onLocationClick(msg.metadata ?: "")
-                    MessageType.IMAGE, MessageType.VIDEO -> onMediaClick(msg)
-                    MessageType.CONTACT -> {
-                        // Metadata contains UID, text contains Name
-                        val intent = Intent(Intent.ACTION_INSERT).apply {
-                            type = ContactsContract.RawContacts.CONTENT_TYPE
-                            putExtra(ContactsContract.Intents.Insert.NAME, msg.text)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (isSelected) ShynaDesign.colors.SelectionOverlay else Color.Transparent)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        contentAlignment = if (msg.mine) Alignment.CenterEnd else Alignment.CenterStart
+    ) {
+        Column(horizontalAlignment = if (msg.mine) Alignment.End else Alignment.Start) {
+            Surface(
+                color = if (msg.mine) Color.Transparent else ShynaDesign.colors.IncomingBubble,
+                shape = shape,
+                shadowElevation = 0.5.dp,
+                modifier = Modifier
+                    .widthIn(max = 320.dp)
+                    .then(
+                        if (msg.mine) Modifier.background(outgoingGradient, shape)
+                        else Modifier
+                    )
+                    .combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = ripple(color = Color.White.copy(alpha = 0.15f)),
+                        onClick = { 
+                            if (isSelectionMode) onClick()
+                            else {
+                                if (msg.isDeletedForEveryone) return@combinedClickable
+                                when(msg.type) {
+                                    MessageType.LOCATION -> onLocationClick(msg.metadata ?: "")
+                                    MessageType.IMAGE, MessageType.VIDEO -> onMediaClick(msg)
+                                    MessageType.CONTACT -> {
+                                        val intent = Intent(Intent.ACTION_INSERT).apply {
+                                            type = ContactsContract.RawContacts.CONTENT_TYPE
+                                            putExtra(ContactsContract.Intents.Insert.NAME, msg.text)
+                                        }
+                                        context.startActivity(intent)
+                                    }
+                                    else -> onClick()
+                                }
+                            }
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            onLongClick()
                         }
-                        context.startActivity(intent)
+                    )
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    if (msg.isDeletedForEveryone) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                            Icon(Icons.Outlined.Block, null, tint = ShynaDesign.colors.TextSecondary.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (msg.mine) "You deleted this message" else "This message was deleted",
+                                fontSize = 14.sp,
+                                color = ShynaDesign.colors.TextSecondary.copy(alpha = 0.6f),
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            )
+                        }
+                    } else {
+                        when(msg.type) {
+                            MessageType.LOCATION -> {
+                                Column {
+                                    Text("📍 Shared Location", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 12.sp)
+                                    Spacer(Modifier.height(6.dp))
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(160.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable {
+                                                msg.metadata?.let { coords ->
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$coords?q=$coords"))
+                                                    context.startActivity(intent)
+                                                }
+                                            }
+                                    ) {
+                                        AsyncImage(
+                                            model = "https://maps.googleapis.com/maps/api/staticmap?center=${msg.metadata}&zoom=15&size=400x400&key=YOUR_MAPS_API_KEY",
+                                            contentDescription = "Map Preview",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        Box(Modifier.fillMaxSize().background(Color.Black.copy(0.1f)), contentAlignment = Alignment.Center) {
+                                            Icon(Icons.Outlined.LocationOn, null, tint = Color.Red, modifier = Modifier.size(32.dp))
+                                        }
+                                    }
+                                    Text(msg.text, fontSize = 15.sp, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.padding(top = 8.dp))
+                                }
+                            }
+                            MessageType.IMAGE -> {
+                                Column {
+                                    AsyncImage(
+                                        model = msg.metadata,
+                                        contentDescription = "Shared Image",
+                                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).aspectRatio(if (msg.text == "landscape") 1.5f else 0.85f),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    if (msg.text != "landscape" && msg.text != "portrait") {
+                                        Text(msg.text, fontSize = 15.sp, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.padding(top = 8.dp))
+                                    }
+                                }
+                            }
+                            MessageType.VIDEO -> {
+                                Box(contentAlignment = Alignment.Center) {
+                                    AsyncImage(
+                                        model = msg.metadata, 
+                                        contentDescription = "Video Thumbnail",
+                                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).aspectRatio(1f),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Surface(shape = CircleShape, color = Color.Black.copy(0.5f), modifier = Modifier.size(48.dp)) {
+                                        Icon(Icons.Filled.PlayArrow, null, tint = Color(0xFFFFFFFF), modifier = Modifier.padding(12.dp))
+                                    }
+                                }
+                            }
+                            MessageType.VOICE -> {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(32.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        repeat(18) { i ->
+                                            Box(Modifier.width(2.5.dp).height((8..28).random().dp).background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(1.dp)))
+                                        }
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("0:12", fontSize = 11.sp, color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            MessageType.FILE -> {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(Color.Black.copy(0.1f), RoundedCornerShape(8.dp)).padding(10.dp)) {
+                                    Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, null, tint = Color.White)
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.weight(1f))
+                                    Icon(Icons.Outlined.Download, null, tint = Color.White.copy(0.7f), modifier = Modifier.size(18.dp))
+                                }
+                            }
+                            MessageType.CONTACT -> {
+                                Column(Modifier.background(Color.Black.copy(0.1f), RoundedCornerShape(8.dp)).padding(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(shape = CircleShape, color = Color.White.copy(0.1f), modifier = Modifier.size(40.dp)) {
+                                            Icon(Icons.Outlined.Person, null, tint = Color.White, modifier = Modifier.padding(8.dp))
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Text(msg.text, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
+                                    }
+                                    HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color.White.copy(0.1f))
+                                    TextButton(
+                                        onClick = {
+                                            val intent = Intent(Intent.ACTION_INSERT).apply {
+                                                type = ContactsContract.RawContacts.CONTENT_TYPE
+                                                putExtra(ContactsContract.Intents.Insert.NAME, msg.text)
+                                            }
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("ADD TO CONTACTS", color = ShynaDesign.colors.BrandGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                            else -> {
+                                Text(msg.text, fontSize = 16.sp, color = ShynaDesign.colors.TextPrimary, lineHeight = 22.sp)
+                            }
+                        }
                     }
-                    else -> {}
+                    
+                    Row(
+                        modifier = Modifier.align(Alignment.End).padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val timeStr = remember(msg.time) {
+                            if (msg.time == 0L) "" else SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(msg.time)).lowercase()
+                        }
+                        Text(timeStr, fontSize = 10.5.sp, color = ShynaDesign.colors.TextSecondary.copy(alpha = 0.8f), fontWeight = FontWeight.Medium)
+                        if (msg.mine) {
+                            Spacer(Modifier.width(6.dp))
+                            val (tickIcon, tickColor) = when(msg.status) {
+                                MessageStatus.SENDING -> Icons.Outlined.AccessTime to ShynaDesign.colors.TextSecondary.copy(0.5f)
+                                MessageStatus.SENT -> Icons.Outlined.Done to ShynaDesign.colors.TextSecondary.copy(0.6f)
+                                MessageStatus.DELIVERED -> Icons.Outlined.DoneAll to ShynaDesign.colors.TextSecondary.copy(0.6f)
+                                MessageStatus.READ -> Icons.Outlined.DoneAll to ShynaDesign.colors.TickRead
+                            }
+                            Icon(tickIcon, null, modifier = Modifier.size(15.dp), tint = tickColor)
+                        }
+                    }
                 }
             }
-        ) {
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                when(msg.type) {
-                    MessageType.LOCATION -> {
-                        Column {
-                            Text("📍 Shared Location", fontWeight = FontWeight.Bold, color = Color(0xFF007AFF), fontSize = 13.sp)
-                            Spacer(Modifier.height(4.dp))
-                            Box(Modifier.fillMaxWidth().height(140.dp).clip(RoundedCornerShape(8.dp))) {
-                                AsyncImage(
-                                    model = "https://maps.googleapis.com/maps/api/staticmap?center=${msg.metadata}&zoom=15&size=400x400&key=YOUR_MAPS_API_KEY",
-                                    contentDescription = "Map Preview",
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                                Box(Modifier.fillMaxSize().background(Color.Black.copy(0.1f)), contentAlignment = Alignment.Center) {
-                                    Icon(Icons.Outlined.LocationOn, null, tint = Color.Red, modifier = Modifier.size(32.dp))
-                                }
-                            }
-                            Text(msg.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
-                        }
-                    }
-                    MessageType.IMAGE -> {
-                        Column {
-                            AsyncImage(
-                                model = msg.metadata,
-                                contentDescription = "Shared Image",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .aspectRatio(if (msg.text == "landscape") 1.5f else 0.75f),
-                                contentScale = ContentScale.Crop
-                            )
-                            if (msg.text != "landscape" && msg.text != "portrait") {
-                                Text(msg.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp))
-                            }
-                        }
-                    }
-                    MessageType.VIDEO -> {
-                        Box(contentAlignment = Alignment.Center) {
-                            AsyncImage(
-                                model = msg.metadata, // Assuming thumbnail or first frame
-                                contentDescription = "Video Thumbnail",
-                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).aspectRatio(1f),
-                                contentScale = ContentScale.Crop
-                            )
-                            Surface(shape = CircleShape, color = Color.Black.copy(0.5f), modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(12.dp))
-                            }
-                        }
-                    }
-                    MessageType.VOICE -> {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(4.dp)) {
-                            Icon(Icons.Filled.PlayArrow, null, tint = Color.Gray, modifier = Modifier.size(32.dp))
-                            Spacer(Modifier.width(8.dp))
-                            // Simple Waveform visualization (static lines for now)
-                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                repeat(15) { i ->
-                                    Box(Modifier.width(2.dp).height((10..30).random().dp).background(if (msg.mine) LinkChipSelectedText else Color.Gray))
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Text("0:12", fontSize = 11.sp, color = Color.Gray)
-                        }
-                    }
-                    MessageType.FILE -> {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(Color.Black.copy(0.05f), RoundedCornerShape(8.dp)).padding(8.dp)) {
-                            Icon(Icons.Outlined.Description, null, tint = Color(0xFFE53935))
-                            Spacer(Modifier.width(8.dp))
-                            Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                            Icon(Icons.Outlined.Download, null, tint = Color.Gray, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                    MessageType.CONTACT -> {
-                        Column(Modifier.background(Color.Black.copy(0.05f), RoundedCornerShape(8.dp)).padding(8.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(shape = CircleShape, color = Color.White, modifier = Modifier.size(40.dp)) {
-                                    Icon(Icons.Outlined.Person, null, tint = Color.Gray, modifier = Modifier.padding(8.dp))
-                                }
-                                Spacer(Modifier.width(12.dp))
-                                Text(msg.text, fontWeight = FontWeight.Bold, color = LinkText)
-                            }
-                            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color.Gray.copy(0.1f))
-                            Text("ADD TO CONTACTS", color = Color(0xFF007AFF), fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth(), fontSize = 13.sp)
-                        }
-                    }
-                    else -> {
-                        Text(msg.text, fontSize = 16.sp, color = Color.Black)
-                    }
-                }
-                
+            
+            // Reactions Display
+            if (msg.reactions.isNotEmpty()) {
+                val uniqueReactions = msg.reactions.values.distinct()
                 Row(
-                    modifier = Modifier.align(Alignment.End).padding(top = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .offset(y = (-10).dp, x = if (msg.mine) 0.dp else 4.dp)
+                        .background(ShynaDesign.colors.SurfaceBg, CircleShape)
+                        .border(1.dp, ShynaDesign.colors.DividerColor, CircleShape)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    val timeStr = remember(msg.time) {
-                        if (msg.time == 0L) "" else SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.time))
+                    uniqueReactions.forEach { emoji ->
+                        Text(
+                            text = emoji, 
+                            fontSize = 12.sp,
+                            modifier = Modifier.clip(CircleShape).clickable { onReaction(emoji) }.padding(horizontal = 2.dp)
+                        )
                     }
-                    Text(
-                        timeStr,
-                        fontSize = 11.sp,
-                        color = Color.Gray
-                    )
-                    if (msg.mine) {
-                        Spacer(Modifier.width(4.dp))
-                        Icon(Icons.Outlined.DoneAll, null, modifier = Modifier.size(15.dp), tint = Color(0xFF53BDEB))
+                    if (msg.reactions.size > 1) {
+                        Text("${msg.reactions.size}", fontSize = 10.sp, color = ShynaDesign.colors.TextSecondary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 2.dp))
                     }
                 }
             }
         }
     }
 }
+
+
+
+
 
 @Composable
 private fun PremiumAttachmentHub(
@@ -2396,49 +3360,78 @@ private fun PremiumAttachmentHub(
     onDocument: () -> Unit,
     onContact: () -> Unit,
     onGallery: () -> Unit,
-    onCamera: () -> Unit,
-    onAudio: () -> Unit
+    onPoll: () -> Unit,
+    onEvent: () -> Unit,
+    onAudio: () -> Unit = {}
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = Color.White,
-        shadowElevation = 8.dp
+        modifier = Modifier.fillMaxWidth(),
+        color = ShynaDesign.colors.SurfaceBg,
+        shadowElevation = 0.dp
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                AttachmentItem("Document", Icons.Outlined.Description, Color(0xFF7F66FF), onDocument)
-                AttachmentItem("Camera", Icons.Outlined.PhotoCamera, Color(0xFFFF4595), onCamera)
-                AttachmentItem("Gallery", Icons.Outlined.Collections, Color(0xFFBB66FF), onGallery)
+        Column(
+            Modifier.padding(top = 8.dp, bottom = 48.dp, start = 24.dp, end = 24.dp), 
+            verticalArrangement = Arrangement.spacedBy(32.dp)
+        ) {
+            Text("Share Content", style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = ShynaDesign.colors.TextPrimary))
+            
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                AttachmentItem("Gallery", Icons.Outlined.Collections, Color(0xFFE91E63), onGallery)
+                AttachmentItem("Camera", Icons.Outlined.PhotoCamera, Color(0xFF9C27B0), onGallery) 
+                AttachmentItem("Location", Icons.Outlined.LocationOn, Color(0xFF4CAF50), onLocation)
+                AttachmentItem("Contact", Icons.Outlined.Person, Color(0xFF2196F3), onContact)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                AttachmentItem("Audio", Icons.Outlined.Headphones, Color(0xFFFF9830), onAudio)
-                AttachmentItem("Location", Icons.Outlined.LocationOn, Color(0xFF06D755), onLocation)
-                AttachmentItem("Contact", Icons.Outlined.Person, Color(0xFF009DE2), onContact)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                AttachmentItem("Document", Icons.Outlined.Description, Color(0xFF795548), onDocument)
+                AttachmentItem("Poll", Icons.Outlined.Poll, Color(0xFFFF9800), onPoll)
+                AttachmentItem("Event", Icons.Outlined.CalendarMonth, Color(0xFF607D8B), onEvent)
+                AttachmentItem("Audio", Icons.Outlined.Headphones, Color(0xFF00BCD4), onAudio)
             }
         }
     }
 }
 
+
+
+
+
 @Composable
 private fun AttachmentItem(label: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally, 
+        modifier = Modifier
+            .width(80.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = ripple(bounded = false, radius = 40.dp),
+                onClick = onClick
+            )
+    ) {
         Surface(
             shape = CircleShape,
-            color = color,
-            modifier = Modifier.size(56.dp)
+            color = color.copy(alpha = 0.12f),
+            modifier = Modifier.size(64.dp),
+            border = BorderStroke(1.5.dp, color.copy(alpha = 0.2f))
         ) {
-            Icon(icon, null, tint = Color.White, modifier = Modifier.padding(14.dp))
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = color, modifier = Modifier.size(30.dp))
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        Text(label, fontSize = 12.sp, color = Color.Gray)
+        Spacer(Modifier.height(10.dp))
+        Text(label, fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary, fontWeight = FontWeight.Medium)
     }
 }
+
+
+
+
 
 @Composable
 private fun FullScreenMediaViewer(media: LocalChatMessage, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    
+    BackHandler { onDismiss() }
     
     Box(Modifier.fillMaxSize().background(Color.Black).clickable { onDismiss() }, contentAlignment = Alignment.Center) {
         if (media.type == MessageType.VIDEO) {
@@ -2485,9 +3478,454 @@ private fun FullScreenMediaViewer(media: LocalChatMessage, onDismiss: () -> Unit
     }
 }
 
+
+
+
+
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun MessageInfoScreen(message: LocalChatMessage, onBack: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Message Info") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null) } }) }) { padding ->
-        Column(Modifier.padding(padding).padding(16.dp)) { Text("Message: ${message.text}"); Text("Sent: ${formatDate(message.time)}") }
+@Composable 
+private fun MessageInfoScreen(message: LocalChatMessage, onBack: () -> Unit) {
+    val sdf = remember { SimpleDateFormat("EEEE, hh:mm a", Locale.getDefault()) }
+    BackHandler { onBack() }
+    
+    Scaffold(
+        topBar = { 
+            TopAppBar(
+                title = { Text("Message Info") }, 
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null) } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF005D4B), titleContentColor = Color.White, navigationIconContentColor = Color.White)
+            ) 
+        }
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize().background(Color(0xFFF0F2F5))) {
+            Box(Modifier.padding(16.dp).fillMaxWidth(), contentAlignment = if (message.mine) Alignment.CenterEnd else Alignment.CenterStart) {
+                ShynaMessageBubble(msg = message)
+            }
+            
+            Spacer(Modifier.height(8.dp))
+            
+            Surface(color = Color.White, shadowElevation = 1.dp) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    InfoRow(
+                        icon = Icons.Outlined.Done,
+                        label = "Sent",
+                        time = if (message.sentAt > 0) sdf.format(Date(message.sentAt)) else "Pending",
+                        color = Color.Gray
+                    )
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color.LightGray.copy(0.5f))
+                    InfoRow(
+                        icon = Icons.Outlined.DoneAll,
+                        label = "Delivered",
+                        time = if (message.deliveredAt > 0) sdf.format(Date(message.deliveredAt)) else "Pending",
+                        color = Color.Gray
+                    )
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Color.LightGray.copy(0.5f))
+                    InfoRow(
+                        icon = Icons.Outlined.DoneAll,
+                        label = "Read",
+                        time = if (message.readAt > 0) sdf.format(Date(message.readAt)) else "Pending",
+                        color = Color(0xFF53BDEB)
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun InfoRow(icon: ImageVector, label: String, time: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(16.dp))
+        Column {
+            Text(label, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text(time, fontSize = 14.sp, color = Color.Gray)
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun ChatHeader(
+    peer: RealUser?,
+    peerName: String,
+    status: String,
+    onBack: () -> Unit,
+    onProfileClick: () -> Unit,
+    onVideoCall: () -> Unit,
+    onVoiceCall: () -> Unit,
+    onMenuClick: () -> Unit,
+    menuOpen: Boolean,
+    onMenuDismiss: () -> Unit,
+    onSearchClick: () -> Unit,
+    onBlockClick: () -> Unit,
+    isBlocked: Boolean,
+    onUnblockClick: () -> Unit
+) {
+    Surface(
+        color = ShynaDesign.colors.HeaderBg,
+        modifier = Modifier.fillMaxWidth().height(68.dp),
+        shadowElevation = if (ShynaDesign.colors.isDark) 0.dp else 4.dp
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxSize().padding(end = 6.dp)
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = ShynaDesign.colors.TextPrimary)
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable(onClick = onProfileClick)
+                    .padding(vertical = 4.dp)
+            ) {
+                Box {
+                    Surface(
+                        shape = CircleShape,
+                        modifier = Modifier.size(44.dp),
+                        color = ShynaDesign.colors.TextSecondary.copy(0.1f)
+                    ) {
+                        if (peer?.photoUrl != null) {
+                            AsyncImage(model = peer.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                        } else {
+                            Icon(Icons.Outlined.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.padding(10.dp))
+                        }
+                    }
+                    if (status == "online") {
+                        Box(Modifier.size(12.dp).align(Alignment.BottomEnd).background(Color.White, CircleShape).padding(1.5.dp)) {
+                            Box(Modifier.fillMaxSize().background(ShynaDesign.colors.BrandGreen, CircleShape))
+                        }
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(peerName, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (status == "online") "Active now" else status, 
+                        fontSize = 12.sp, 
+                        color = if (status == "online") ShynaDesign.colors.BrandGreen else ShynaDesign.colors.TextSecondary, 
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            IconButton(onClick = onVideoCall) { Icon(Icons.Outlined.Videocam, null, tint = ShynaDesign.colors.TextPrimary, modifier = Modifier.size(26.dp)) }
+            IconButton(onClick = onVoiceCall) { Icon(Icons.Outlined.Call, null, tint = ShynaDesign.colors.TextPrimary, modifier = Modifier.size(22.dp)) }
+            Box {
+                IconButton(onClick = onMenuClick) { Icon(Icons.Outlined.MoreVert, null, tint = ShynaDesign.colors.TextPrimary) }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = onMenuDismiss, modifier = Modifier.background(ShynaDesign.colors.HeaderBg)) {
+                    DropdownMenuItem(text = { Text("View Profile", color = ShynaDesign.colors.TextPrimary) }, onClick = onProfileClick)
+                    DropdownMenuItem(text = { Text("Search in Chat", color = ShynaDesign.colors.TextPrimary) }, onClick = onSearchClick)
+                    DropdownMenuItem(text = { Text("Clear Chat", color = ShynaDesign.colors.TextPrimary) }, onClick = { /* TODO */ })
+                    if (isBlocked) {
+                        DropdownMenuItem(text = { Text("Unblock User", color = ShynaDesign.colors.TextPrimary) }, onClick = onUnblockClick)
+                    } else {
+                        DropdownMenuItem(text = { Text("Block User", color = Color.Red.copy(0.8f)) }, onClick = onBlockClick)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun SelectionHeader(
+    selectedCount: Int,
+    onClose: () -> Unit,
+    onReply: () -> Unit,
+    onStar: () -> Unit,
+    onDelete: () -> Unit,
+    onForward: () -> Unit,
+    onInfo: () -> Unit,
+    canReply: Boolean,
+    canInfo: Boolean
+) {
+    Surface(
+        color = Color(0xFF202C33),
+        modifier = Modifier.fillMaxWidth().height(64.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp)) {
+            IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, null, tint = Color.White) }
+            Text("$selectedCount", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(start = 12.dp))
+            
+            if (canReply) IconButton(onClick = onReply) { Icon(Icons.AutoMirrored.Outlined.Reply, null, tint = Color.White) }
+            IconButton(onClick = onStar) { Icon(Icons.Outlined.Star, null, tint = Color.White) }
+            IconButton(onClick = onDelete) { Icon(Icons.Outlined.Delete, null, tint = Color.White) }
+            IconButton(onClick = onForward) { Icon(Icons.AutoMirrored.Outlined.Forward, null, tint = Color.White) }
+            if (canInfo) IconButton(onClick = onInfo) { Icon(Icons.Outlined.Info, null, tint = Color.White) }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun ChatSearchHeader(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit
+) {
+    Surface(
+        color = Color(0xFF202C33),
+        modifier = Modifier.fillMaxWidth().height(64.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp)) {
+            IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = Color.White) }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
+                cursorBrush = SolidColor(Color.White),
+                decorationBox = { innerTextField ->
+                    if (query.isEmpty()) Text("Search...", color = Color.White.copy(0.5f), fontSize = 18.sp)
+                    innerTextField()
+                }
+            )
+            IconButton(onClick = onPrev) { Icon(Icons.Outlined.KeyboardArrowUp, null, tint = Color.White) }
+            IconButton(onClick = onNext) { Icon(Icons.Outlined.KeyboardArrowDown, null, tint = Color.White) }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun ReplyPreview(
+    message: LocalChatMessage,
+    onCancel: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFF202C33).copy(alpha = 0.5f)
+    ) {
+        Row(Modifier.height(IntrinsicSize.Min)) {
+            Box(Modifier.width(4.dp).fillMaxHeight().background(Color(0xFF00A884)))
+            Column(Modifier.padding(8.dp).weight(1f)) {
+                Text(if (message.mine) "You" else message.peerName, color = Color(0xFF00A884), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                Text(message.text, color = Color.White.copy(0.7f), fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            IconButton(onClick = onCancel) { Icon(Icons.Outlined.Close, null, tint = Color.White.copy(0.5f), modifier = Modifier.size(16.dp)) }
+        }
+    }
+}
+
+
+
+
+
+@Composable
+private fun ChatComposer(
+    text: String,
+    onTextChange: (String) -> Unit,
+    isRecording: Boolean,
+    recordingDuration: Long,
+    onAttachClick: () -> Unit,
+    onCameraClick: () -> Unit,
+    onSendClick: () -> Unit,
+    onMicClick: () -> Unit,
+    placeholder: String,
+    onEmojiClick: () -> Unit,
+    isEmojiPickerOpen: Boolean
+) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    
+    Surface(
+        color = ShynaDesign.colors.HeaderBg, 
+        modifier = Modifier.navigationBarsPadding().imePadding(),
+        shadowElevation = 16.dp,
+        border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor.copy(alpha = 0.5f))
+    ) {
+        Column {
+            if (isRecording) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                    color = Color.Red,
+                    trackColor = Color.Transparent
+                )
+            }
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(26.dp),
+                    color = if (ShynaDesign.colors.isDark) ShynaDesign.colors.SurfaceBg else Color(0xFFF2F2F7),
+                    border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor.copy(alpha = 0.3f))
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp)) {
+                        IconButton(onClick = onEmojiClick) { 
+                            Icon(
+                                if (isEmojiPickerOpen) Icons.Outlined.Keyboard else Icons.Outlined.SentimentSatisfiedAlt, 
+                                null, 
+                                tint = ShynaDesign.colors.TextSecondary, 
+                                modifier = Modifier.size(26.dp)
+                            ) 
+                        }
+                        
+                        if (isRecording) {
+                            Row(
+                                modifier = Modifier.weight(1f).padding(vertical = 12.dp, horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.size(8.dp).background(Color.Red, CircleShape))
+                                Spacer(Modifier.width(8.dp))
+                                val minutes = (recordingDuration / 1000) / 60
+                                val seconds = (recordingDuration / 1000) % 60
+                                val timeText = "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+                                Text(
+                                    text = timeText,
+                                    color = ShynaDesign.colors.TextPrimary,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 17.sp
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text("Slide to cancel", color = ShynaDesign.colors.TextSecondary, fontSize = 12.sp)
+                            }
+                        } else {
+                            BasicTextField(
+                                value = text,
+                                onValueChange = onTextChange,
+                                modifier = Modifier.weight(1f).padding(vertical = 12.dp, horizontal = 4.dp),
+                                textStyle = TextStyle(fontSize = 17.sp, color = ShynaDesign.colors.TextPrimary),
+                                cursorBrush = SolidColor(ShynaDesign.colors.BrandGreen),
+                                decorationBox = { innerTextField ->
+                                    if (text.isEmpty()) Text(placeholder, color = ShynaDesign.colors.TextSecondary, fontSize = 16.sp)
+                                    innerTextField()
+                                }
+                            )
+                            IconButton(onClick = onAttachClick) { 
+                                Icon(Icons.Outlined.AttachFile, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(24.dp).graphicsLayer { rotationZ = -45f }) 
+                            }
+                            if (text.isEmpty()) {
+                                IconButton(onClick = onCameraClick) { 
+                                    Icon(Icons.Outlined.PhotoCamera, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(24.dp)) 
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                FloatingActionButton(
+                    onClick = { 
+                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                        if (text.isNotBlank()) onSendClick() else onMicClick() 
+                    },
+                    containerColor = ShynaDesign.colors.BrandGreen,
+                    contentColor = Color.White,
+                    shape = CircleShape,
+                    modifier = Modifier.size(52.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(2.dp)
+                ) {
+                    val icon = if (text.isNotBlank()) Icons.AutoMirrored.Outlined.Send else if (isRecording) Icons.Outlined.Stop else Icons.Outlined.Mic
+                    Icon(icon, null, modifier = Modifier.size(24.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmojiPicker(onEmojiSelected: (String) -> Unit) {
+    val emojis = listOf(
+        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐", "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠", "😈", "👿", "👹", "👺", "🤡", "💩", "👻", "💀", "☠️", "👽", "👾", "🤖", "🎃", "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿", "😾"
+    )
+    
+    Surface(
+        modifier = Modifier.fillMaxWidth().height(260.dp),
+        color = ShynaDesign.colors.SurfaceBg,
+        border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
+    ) {
+        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+            columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(44.dp),
+            contentPadding = PaddingValues(8.dp)
+        ) {
+            items(emojis.size) { index ->
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clickable { onEmojiSelected(emojis[index]) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(emojis[index], fontSize = 24.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReactionPicker(onEmojiSelected: (String) -> Unit, onDismiss: () -> Unit) {
+    val reactions = listOf("👍", "👎", "❤️", "🔥", "😂", "😮", "😢", "😡")
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable { onDismiss() },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = ShynaDesign.colors.HeaderBg,
+            shadowElevation = 8.dp,
+            border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
+        ) {
+            Row(
+                modifier = Modifier.padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                reactions.forEach { emoji ->
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clickable { onEmojiSelected(emoji); onDismiss() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(emoji, fontSize = 24.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DateDivider(date: String) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            color = ShynaDesign.colors.HeaderBg.copy(alpha = 0.9f),
+            shape = RoundedCornerShape(10.dp),
+            shadowElevation = 2.dp
+        ) {
+            Text(
+                date.uppercase(),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = ShynaDesign.colors.TextSecondary,
+                letterSpacing = 1.2.sp
+            )
+        }
     }
 }

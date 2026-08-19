@@ -1,16 +1,19 @@
 package com.example.callruleblocker.call
 
 import android.content.Context
+import android.util.Log
 import com.example.callruleblocker.data.LiveKitConfig
+import com.google.firebase.auth.FirebaseAuth
+import com.google.gson.Gson
+import com.google.gson.JsonObject
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
 import kotlinx.coroutines.*
+import kotlinx.coroutines.tasks.await
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import com.google.gson.Gson
-import com.google.gson.JsonObject
 
 class LiveKitCallManager(private val context: Context) {
     private var room: Room? = null
@@ -101,5 +104,42 @@ class LiveKitCallManager(private val context: Context) {
     fun leaveRoom() {
         room?.disconnect()
         room = null
+    }
+
+    suspend fun notifyReceiver(call: AppCall): Boolean = withContext(Dispatchers.IO) {
+        val user = FirebaseAuth.getInstance().currentUser ?: return@withContext false
+        val idToken = try {
+            user.getIdToken(false).await().token ?: return@withContext false
+        } catch (e: Exception) {
+            return@withContext false
+        }
+
+        val baseUrl = getTokenServerUrl().trimEnd('/')
+        val url = "$baseUrl/notify-call"
+
+        val json = JsonObject().apply {
+            addProperty("callId", call.id)
+            addProperty("receiverUid", call.receiverUid)
+            addProperty("callerName", call.callerName)
+            addProperty("callType", call.type.name)
+        }
+
+        val body = gson.toJson(json).toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $idToken")
+            .post(body)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                val success = response.isSuccessful
+                Log.d("ShynaCall", "FCM_NOTIFY_SERVER: success=$success code=${response.code}")
+                success
+            }
+        } catch (e: Exception) {
+            Log.e("ShynaCall", "FCM_NOTIFY_FAILED", e)
+            false
+        }
     }
 }

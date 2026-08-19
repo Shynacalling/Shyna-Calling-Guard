@@ -122,10 +122,26 @@
             android:turnScreenOn="true"
             android:theme="@style/Theme.CallRuleBlocker" />
 
+        <activity
+            android:name="com.example.callruleblocker.AppCallActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.CallRuleBlocker" />
+
         <service
             android:name="com.example.callruleblocker.data.LocationService"
             android:foregroundServiceType="location"
             android:exported="false" />
+
+        <service
+            android:name="com.example.callruleblocker.ShynaFCMService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name="com.example.callruleblocker.CallActionReceiver"

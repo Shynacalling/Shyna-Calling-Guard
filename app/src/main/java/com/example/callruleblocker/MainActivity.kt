@@ -24,10 +24,12 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.example.callruleblocker.data.RuleRepository
+import com.example.callruleblocker.data.SessionManager
 import com.example.callruleblocker.call.SimCallManager
 import com.example.callruleblocker.ui.*
 import com.example.callruleblocker.ui.theme.CallRuleBlockerTheme
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.Timestamp
@@ -91,6 +93,28 @@ class MainActivity : FragmentActivity() {
             if (user != null) {
                 // ENSURE PROFILE SYNC ON AUTH STATE CHANGE
                 syncCurrentUserToFirestore()
+                
+                // SAVE FCM TOKEN FOR CALL NOTIFICATIONS
+                FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        val token = task.result
+                        FirebaseFirestore.getInstance().collection("users").document(user.uid)
+                            .set(mapOf("fcmToken" to token), SetOptions.merge())
+                            .addOnSuccessListener { Log.d("ShynaCall", "FCM_TOKEN_SYNCED") }
+                    }
+                }
+
+                // APP-TO-APP CALL LISTENER
+                com.example.callruleblocker.call.CallSignalingManager.listenForIncomingCalls(user.uid) { call ->
+                    val intent = Intent(this, AppCallActivity::class.java).apply {
+                        putExtra("callId", call.id)
+                        putExtra("isIncoming", true)
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    startActivity(intent)
+                }
+            } else {
+                com.example.callruleblocker.call.CallSignalingManager.cleanup()
             }
         }
 
@@ -120,6 +144,41 @@ class MainActivity : FragmentActivity() {
             val onThemeChanged = { appearanceSettings = PersonalizationManager.getSettings(context) }
 
             CompositionLocalProvider(LocalAppearance provides appearanceSettings) {
+                val currentUid = firebaseUser?.uid
+                var sessionExpired by remember { mutableStateOf(false) }
+
+                LaunchedEffect(currentUid) {
+                    if (currentUid != null) {
+                        val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        val localSessionId = SessionManager.getLocalSessionId(context)
+                        
+                        db.collection("users").document(currentUid).addSnapshotListener { snapshot, _ ->
+                            val remoteSessionId = snapshot?.getString("activeSessionId")
+                            if (remoteSessionId != null && localSessionId != null && remoteSessionId != localSessionId) {
+                                sessionExpired = true
+                            }
+                        }
+                    }
+                }
+
+                if (sessionExpired) {
+                    AlertDialog(
+                        onDismissRequest = { /* Force logout */ },
+                        title = { Text("Session Expired") },
+                        text = { Text("Your account has been logged in on another device. Please log in again.") },
+                        confirmButton = {
+                            Button(onClick = {
+                                SessionManager.clearLocalSession(context)
+                                auth.signOut()
+                                sessionExpired = false
+                                firebaseUser = null
+                            }) {
+                                Text("OK")
+                            }
+                        }
+                    )
+                }
+
                 CallRuleBlockerTheme {
                     val prefs = remember { context.getSharedPreferences("call_settings", Context.MODE_PRIVATE) }
                     var isLocked by remember { 
@@ -287,6 +346,10 @@ class MainActivity : FragmentActivity() {
         val lName = parts.getOrNull(1) ?: ""
         val name = if (displayName.isNotBlank()) displayName else email.substringBefore("@")
         
+        val sessionId = SessionManager.getLocalSessionId(this) 
+                        ?: SessionManager.startNewSession(this)
+        val deviceId = SessionManager.getDeviceId(this)
+
         val syncData = mutableMapOf<String, Any>(
             "uid" to user.uid,
             "email" to email,
@@ -298,6 +361,8 @@ class MainActivity : FragmentActivity() {
             "phone" to (user.phoneNumber ?: ""),
             "photoUrl" to (user.photoUrl?.toString() ?: ""),
             "isOnline" to true,
+            "activeSessionId" to sessionId,
+            "deviceId" to deviceId,
             "lastSeen" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
             "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
