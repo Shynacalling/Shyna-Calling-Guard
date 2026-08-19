@@ -154,56 +154,29 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     val db = remember { FirebaseFirestore.getInstance() }
     var firebaseUid by remember { mutableStateOf(auth.currentUser?.uid) }
     
-    // ENSURE PROFILE SYNC (Deep Fix: Source of Truth)
+    // ENSURE PROFILE SYNC (Final Foolproof implementation)
     LaunchedEffect(firebaseUid) {
         if (firebaseUid != null) {
-            val userRef = db.collection("users").document(firebaseUid!!)
             val user = auth.currentUser
-            val currentEmail = user?.email ?: ""
-            val normalizedEmail = currentEmail.trim().lowercase()
-            
-            userRef.get().addOnSuccessListener { doc ->
-                val existingName = doc.getString("name") ?: doc.getString("displayName")
-                val safeName = if (existingName == null || existingName == "null" || existingName.isBlank()) {
-                    user?.displayName ?: currentEmail.substringBefore("@")
-                } else existingName
-
-                val existingPhone = doc.getString("phone") ?: ""
-                val normalizedPhone = existingPhone.replace(Regex("[^0-9+]"), "")
-                val cUid = doc.getString("customUid") ?: ""
-
+            if (user != null) {
+                Log.d("ShynaDiscovery", "PROFILE_SYNC_START (Screen)")
+                val email = user.email ?: ""
                 val syncData = mutableMapOf<String, Any>(
-                    "uid" to firebaseUid!!,
-                    "email" to currentEmail,
-                    "normalizedEmail" to normalizedEmail,
-                    "name" to safeName,
-                    "displayName" to safeName,
+                    "uid" to user.uid,
+                    "email" to email,
+                    "normalizedEmail" to email.trim().lowercase(),
+                    "displayName" to (user.displayName ?: ""),
+                    "name" to (user.displayName ?: email.substringBefore("@")),
+                    "phone" to (user.phoneNumber ?: ""),
+                    "photoUrl" to (user.photoUrl?.toString() ?: ""),
                     "isOnline" to true,
-                    "lastSeen" to Timestamp.now(),
-                    "updatedAt" to Timestamp.now()
+                    "lastSeen" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                    "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                 )
-                if (existingPhone.isNotEmpty()) {
-                    syncData["phone"] = existingPhone
-                    syncData["normalizedPhone"] = normalizedPhone
-                }
-                if (cUid.isNotEmpty()) {
-                    syncData["customUid"] = cUid
-                }
-                
-                userRef.set(syncData, SetOptions.merge())
-            }.addOnFailureListener { e ->
-                Log.e(TAG, "Profile sync failed (Read): ${e.message}")
-                // Try writing anyway if it's a new database
-                val syncData = hashMapOf(
-                    "uid" to firebaseUid!!,
-                    "email" to currentEmail,
-                    "normalizedEmail" to normalizedEmail,
-                    "name" to (user?.displayName ?: currentEmail.substringBefore("@")),
-                    "isOnline" to true,
-                    "updatedAt" to Timestamp.now()
-                )
-                userRef.set(syncData, SetOptions.merge())
-                    .addOnFailureListener { Log.e(TAG, "Profile sync failed (Write): ${it.message}") }
+                db.collection("users").document(user.uid)
+                    .set(syncData, SetOptions.merge())
+                    .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid} (Screen)") }
+                    .addOnFailureListener { Log.e("ShynaDiscovery", "PROFILE_SYNC_FAILED (Screen)", it) }
             }
         }
     }
@@ -215,13 +188,13 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     DisposableEffect(firebaseUid) {
         if (firebaseUid != null) {
             isLoadingUsers = true
-            Log.d(TAG, "Fetching users from Firestore. Project: ${db.app.options.projectId}")
+            Log.d("ShynaDiscovery", "Fetching users from Firestore. Project: ${db.app.options.projectId}")
             val listener = db.collection("users")
                 .limit(500) 
                 .addSnapshotListener { snapshots, error ->
                     isLoadingUsers = false
                     if (error != null) {
-                        Log.e(TAG, "Firestore error: ${error.message}", error)
+                        Log.e("ShynaDiscovery", "Firestore error: ${error.message}", error)
                         Toast.makeText(context, "Search unavailable: ${error.code}", Toast.LENGTH_SHORT).show()
                         return@addSnapshotListener
                     }
@@ -251,12 +224,13 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                         )
                     } ?: emptyList()
                     
-                    Log.d(TAG, "Successfully loaded ${users.size} users from Firestore")
+                    Log.d("ShynaDiscovery", "SEARCH_RESULTS=${users.size}")
+                    Log.d("ShynaDiscovery", "Successfully loaded ${users.size} users from Firestore")
                     allRealUsers = users
                 }
             
             onDispose {
-                db.collection("users").document(firebaseUid!!).update("isOnline", false, "lastSeen", Timestamp.now())
+                db.collection("users").document(firebaseUid!!).update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
                 listener.remove()
             }
         } else {
@@ -557,6 +531,7 @@ private fun ChatsPage(
     val displayList = remember(messages.size, search, allRealUsers) {
         val rawQuery = search.trim()
         val query = rawQuery.lowercase()
+        Log.d("ShynaDiscovery", "SEARCH_QUERY='$query'")
         
         val items = allRealUsers.map { user ->
             val lastMsg = messages.find { it.peerName == user.uid }

@@ -7,6 +7,7 @@ import android.app.role.RoleManager
 import android.telecom.TelecomManager
 import android.content.pm.PackageManager
 import android.widget.Toast
+import android.util.Log
 import android.os.Build
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
@@ -89,7 +90,7 @@ class MainActivity : FragmentActivity() {
             firebaseUser = user
             if (user != null) {
                 // ENSURE PROFILE SYNC ON AUTH STATE CHANGE
-                saveUserProfile(user.uid, user.displayName ?: user.email?.substringBefore("@") ?: "User", user.email ?: "", "")
+                syncCurrentUserToFirestore()
             }
         }
 
@@ -255,9 +256,8 @@ class MainActivity : FragmentActivity() {
                 firebaseUser = auth.currentUser
                 if (task.isSuccessful) {
                     val uid = auth.currentUser?.uid
-                    val currentEmail = auth.currentUser?.email ?: ""
                     if (uid != null) {
-                        saveUserProfile(uid, currentEmail.substringBefore("@"), currentEmail, "")
+                        syncCurrentUserToFirestore()
                     }
                     Toast.makeText(this, "Signup Successful", Toast.LENGTH_SHORT).show()
                 }
@@ -267,31 +267,44 @@ class MainActivity : FragmentActivity() {
             }
     }
 
-    private fun saveUserProfile(uid: String, name: String, email: String, phone: String) {
-        val db = FirebaseFirestore.getInstance()
-        val normalizedPhone = phone.replace(Regex("[^0-9+]"), "")
-        val normalizedEmail = email.trim().lowercase()
-        val parts = name.split(" ", limit = 2)
-        val fName = parts.getOrNull(0) ?: ""
-        val lName = parts.getOrNull(1) ?: ""
+    fun syncCurrentUserToFirestore() {
+        val user = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser ?: run {
+            Log.e("ShynaDiscovery", "PROFILE_SYNC_ABORTED: No current user")
+            return
+        }
+        val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        
+        Log.d("ShynaDiscovery", "PROFILE_SYNC_START")
+        Log.d("ShynaDiscovery", "FIREBASE_PROJECT_ID=${db.app.options.projectId}")
+        Log.d("ShynaDiscovery", "AUTH_UID=${user.uid}")
+        Log.d("ShynaDiscovery", "AUTH_EMAIL=${user.email}")
 
-        val user = hashMapOf(
-            "uid" to uid,
-            "name" to name,
-            "firstName" to fName,
-            "lastName" to lName,
-            "displayName" to name,
+        val email = user.email ?: ""
+        val normalizedEmail = email.trim().lowercase()
+        val displayName = user.displayName ?: ""
+        val name = if (displayName.isNotBlank()) displayName else email.substringBefore("@")
+        
+        val syncData = mutableMapOf<String, Any>(
+            "uid" to user.uid,
             "email" to email,
             "normalizedEmail" to normalizedEmail,
-            "phone" to phone,
-            "normalizedPhone" to normalizedPhone,
+            "displayName" to displayName,
+            "name" to name,
+            "phone" to (user.phoneNumber ?: ""),
+            "photoUrl" to (user.photoUrl?.toString() ?: ""),
             "isOnline" to true,
-            "lastSeen" to com.google.firebase.Timestamp.now(),
-            "createdAt" to com.google.firebase.Timestamp.now(),
-            "updatedAt" to com.google.firebase.Timestamp.now()
+            "lastSeen" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+            "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
-        db.collection("users").document(uid).set(user, com.google.firebase.firestore.SetOptions.merge())
-            .addOnFailureListener { it.printStackTrace() }
+
+        db.collection("users").document(user.uid)
+            .set(syncData, com.google.firebase.firestore.SetOptions.merge())
+            .addOnSuccessListener {
+                Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid}")
+            }
+            .addOnFailureListener { e ->
+                Log.e("ShynaDiscovery", "PROFILE_SYNC_FAILED uid=${user.uid}", e)
+            }
     }
 
     fun loginUser(email: String, password: String) {
@@ -300,10 +313,9 @@ class MainActivity : FragmentActivity() {
                 firebaseUser = auth.currentUser
                 if (task.isSuccessful) {
                     val uid = auth.currentUser?.uid
-                    val currentEmail = auth.currentUser?.email ?: ""
                     if (uid != null) {
                         // CRITICAL: Sync profile to Firestore on EVERY login to ensure searchability
-                        saveUserProfile(uid, currentEmail.substringBefore("@"), currentEmail, "")
+                        syncCurrentUserToFirestore()
                     }
                     Toast.makeText(this, "Login Successful", Toast.LENGTH_SHORT).show()
                 } else {
