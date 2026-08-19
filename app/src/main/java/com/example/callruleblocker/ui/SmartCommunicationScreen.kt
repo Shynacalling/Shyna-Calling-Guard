@@ -107,7 +107,7 @@ private const val TAG = "ShynaDiscovery"
 private const val COMM_PREFS = "smart_communication_v2"
 private enum class LinkTab { CHATS, UPDATES, COMMUNITIES, CALLS, YOU }
 private enum class MessageStatus { SENDING, SENT, DELIVERED, READ }
-private enum class MessageType { TEXT, LOCATION, FILE, VOICE, IMAGE, VIDEO, EVENT, POLL, CONTACT }
+private enum class MessageType { TEXT, LOCATION, FILE, VOICE, IMAGE, VIDEO, EVENT, POLL, CONTACT, LIVE_LOCATION }
 private enum class ConnectionStatus { NONE, PENDING, ACCEPTED, BLOCKED, IGNORED }
 
 private data class Connection(
@@ -2203,43 +2203,9 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
         ProfileImageEditorDialog(
             imageUri = selectedImageUri!!,
             onDismiss = { showImagePicker = false },
-            onConfirm = { croppedBitmap ->
+            onConfirm = { _ ->
                 showImagePicker = false
-                isUploading = true
-                try {
-                    val file = File(context.cacheDir, "profile_${System.currentTimeMillis()}.jpg")
-                    val out = java.io.FileOutputStream(file)
-                    croppedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-                    out.flush()
-                    out.close()
-
-                    val ref = storage.reference.child("profile_pics/${currentUser.uid}.jpg")
-                    ref.putFile(Uri.fromFile(file))
-                        .addOnSuccessListener {
-                            ref.downloadUrl.addOnSuccessListener { downloadUri ->
-                                // 1. Update Firestore
-                                db.collection("users").document(currentUser.uid)
-                                    .update("photoUrl", downloadUri.toString())
-                                    .addOnSuccessListener {
-                                        // 2. Update Firebase Auth Profile (for persistence and cross-app sync)
-                                        val profileUpdates = com.google.firebase.auth.userProfileChangeRequest {
-                                            photoUri = downloadUri
-                                        }
-                                        com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.updateProfile(profileUpdates)?.addOnCompleteListener {
-                                            isUploading = false
-                                            Toast.makeText(context, "Profile picture updated everywhere!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                            }
-                        }
-                        .addOnFailureListener {
-                            isUploading = false
-                            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
-                        }
-                } catch (e: Exception) {
-                    isUploading = false
-                    Toast.makeText(context, "Error saving image", Toast.LENGTH_SHORT).show()
-                }
+                // ProfileImageEditorDialog now handles the upload and DB sync itself
             }
         )
     }
@@ -2593,13 +2559,17 @@ private fun ProfileImageEditorDialog(
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                                     val source = android.graphics.ImageDecoder.createSource(context.contentResolver, imageUri)
                                     android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                                        decoder.isMutableRequired = true
+                                        decoder.setMutableRequired(true)
+                                        decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
                                     }
                                 } else {
                                     @Suppress("DEPRECATION")
                                     android.provider.MediaStore.Images.Media.getBitmap(context.contentResolver, imageUri)
                                 }
-                            } catch (e: Exception) { null }
+                            } catch (e: Exception) { 
+                                Log.e("ShynaCall", "Bitmap decode failed", e)
+                                null 
+                            }
                             
                             if (originalBitmap != null) {
                                 scope.launch(Dispatchers.IO) {
@@ -2613,32 +2583,58 @@ private fun ProfileImageEditorDialog(
                                         // 2. Compress and save to cache
                                         val file = File(context.cacheDir, "dp_${auth.currentUser?.uid}.jpg")
                                         val out = java.io.FileOutputStream(file)
-                                        transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                                        transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
                                         out.close()
                                         
                                         // 3. Upload to Storage
                                         val storage = FirebaseStorage.getInstance()
-                                        val ref = storage.reference.child("profiles/${auth.currentUser?.uid}.jpg")
-                                        ref.putFile(Uri.fromFile(file)).await()
-                                        val downloadUrl = ref.downloadUrl.await().toString()
+                                        val currentUid = auth.currentUser?.uid ?: throw Exception("Not logged in")
+                                        val ref = storage.reference.child("profiles").child("${currentUid}.jpg")
                                         
-                                        // 4. Update Firestore
-                                        val uid = auth.currentUser?.uid
-                                        if (uid != null) {
-                                            FirebaseFirestore.getInstance().collection("users").document(uid)
-                                                .update("photoUrl", downloadUrl).await()
-                                        }
+                                        // RELIABLE UPLOAD: Convert to byte array first
+                                        val baos = java.io.ByteArrayOutputStream()
+                                        transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, baos)
+                                        val data = baos.toByteArray()
+                                        
+                                        // Use Task API for better reliability
+                                        val uploadTask = ref.putBytes(data)
+                                        uploadTask.continueWithTask { task ->
+                                            if (!task.isSuccessful) task.exception?.let { throw it }
+                                            ref.downloadUrl
+                                        }.await().let { downloadUri ->
+                                            val downloadUrl = downloadUri.toString()
+                                            
+                                            // 4. Update Firestore & Firebase Auth Profile
+                                            val finalUrl = if (downloadUrl.contains("?")) "$downloadUrl&t=${System.currentTimeMillis()}" else "$downloadUrl?t=${System.currentTimeMillis()}"
+                                            
+                                            FirebaseFirestore.getInstance().collection("users").document(currentUid)
+                                                .set(mapOf("photoUrl" to finalUrl), SetOptions.merge()).await()
+                                            
+                                            val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                                                .setPhotoUri(Uri.parse(finalUrl))
+                                                .build()
+                                            auth.currentUser?.updateProfile(profileUpdates)?.await()
 
-                                        withContext(Dispatchers.Main) {
-                                            onConfirm(transformed)
-                                            onDismiss()
+                                            withContext(Dispatchers.Main) {
+                                                onConfirm(transformed)
+                                                onDismiss()
+                                                Toast.makeText(context, "Profile photo updated!", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     } catch (e: Exception) {
+                                        Log.e("ShynaCall", "Profile update failed: ${e.message}", e)
                                         withContext(Dispatchers.Main) {
-                                            Toast.makeText(context, "Failed to update profile picture", Toast.LENGTH_SHORT).show()
+                                            val errorMsg = when {
+                                                e.message?.contains("not exist") == true -> "Storage Error: Object not found. Please check Firebase Storage Rules."
+                                                e.message?.contains("not authorized") == true -> "Permission Denied: Check Storage Rules."
+                                                else -> "Upload failed: ${e.localizedMessage}"
+                                            }
+                                            Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
                                         }
                                     }
                                 }
+                            } else {
+                                Toast.makeText(context, "Could not load image", Toast.LENGTH_SHORT).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen),
@@ -2705,6 +2701,12 @@ private fun SmartChatDetailScreen(
     }
 
     val isAtBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
+    var isSharingLiveLocation by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        isSharingLiveLocation = manager.getRunningServices(Int.MAX_VALUE).any { it.service.className == com.example.callruleblocker.data.LocationService::class.java.name }
+    }
 
     // REAL-TIME FIRESTORE LISTENER
     DisposableEffect(chatId) {
@@ -2797,25 +2799,33 @@ private fun SmartChatDetailScreen(
         isUploadingMedia = true
         val storage = FirebaseStorage.getInstance()
         val storageRef = storage.reference
-        val fileName = "${System.currentTimeMillis()}_${uri.lastPathSegment ?: "file"}"
-        val fileRef = storageRef.child("chat_media/$chatId/$fileName")
+        
+        // Sanitize file name to avoid path issues
+        val rawFileName = uri.lastPathSegment ?: "file_${System.currentTimeMillis()}"
+        val sanitizedFileName = rawFileName.replace(Regex("[^a-zA-Z0-9.]"), "_")
+        val fileName = "${System.currentTimeMillis()}_$sanitizedFileName"
+        
+        val fileRef = storageRef.child("chat_media").child(chatId).child(fileName)
         
         scope.launch(Dispatchers.IO) {
             try {
-                var finalUri = uri
+                // IMMEDIATE READ: Read URI into ByteArray on IO thread to avoid permission loss
+                val inputStream = context.contentResolver.openInputStream(uri)
+                val bytes = inputStream?.readBytes() ?: throw Exception("Could not read file data")
+                inputStream.close()
+
+                var finalBytes = bytes
                 if (type == MessageType.IMAGE) {
-                    val bitmap = android.graphics.BitmapFactory.decodeStream(context.contentResolver.openInputStream(uri))
+                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                     if (bitmap != null) {
-                        val file = File(context.cacheDir, "temp_comp_${System.currentTimeMillis()}.jpg")
-                        val out = java.io.FileOutputStream(file)
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 75, out)
-                        out.close()
-                        finalUri = Uri.fromFile(file)
+                        val baos = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, baos)
+                        finalBytes = baos.toByteArray()
                     }
                 }
 
                 withContext(Dispatchers.Main) {
-                    fileRef.putFile(finalUri)
+                    fileRef.putBytes(finalBytes)
                         .continueWithTask { task ->
                             if (!task.isSuccessful) task.exception?.let { throw it }
                             fileRef.downloadUrl
@@ -2826,13 +2836,16 @@ private fun SmartChatDetailScreen(
                         }
                         .addOnFailureListener { e ->
                             isUploadingMedia = false
-                            Toast.makeText(context, "Upload failed", Toast.LENGTH_SHORT).show()
+                            val errorMsg = e.localizedMessage ?: "Unknown Error"
+                            Log.e("ShynaCall", "Upload failed: $errorMsg", e)
+                            Toast.makeText(context, "Upload failed: $errorMsg", Toast.LENGTH_LONG).show()
                         }
                 }
             } catch (e: Exception) {
+                Log.e("ShynaCall", "Media processing failed", e)
                 withContext(Dispatchers.Main) {
                     isUploadingMedia = false
-                    Toast.makeText(context, "Processing failed", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Media error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -2906,8 +2919,7 @@ private fun SmartChatDetailScreen(
                         onNext = { },
                         onPrev = { }
                     )
-                }
-else {
+                } else {
                     ChatHeader(
                         peer = peer,
                         peerName = peerName,
@@ -2951,6 +2963,22 @@ else {
                         onUnblockClick = { updateConnectionStatus(ConnectionStatus.NONE, null); menuOpen = false }
                     )
                 }
+                
+                if (isSharingLiveLocation) {
+                    Surface(color = Color.Red.copy(0.1f), modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.MyLocation, null, tint = Color.Red, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Text("You are sharing live location", color = Color.Red, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { 
+                                val stopIntent = Intent(context, com.example.callruleblocker.data.LocationService::class.java).apply { action = "STOP_LIVE_LOCATION" }
+                                context.startService(stopIntent)
+                                isSharingLiveLocation = false
+                                sendMessage("📍 Live Location Stopped", MessageType.TEXT, null)
+                            }) { Text("STOP", color = Color.Red, fontWeight = FontWeight.Black) }
+                        }
+                    }
+                }
             }
         },
         bottomBar = {
@@ -2960,18 +2988,9 @@ else {
                     ModalBottomSheet(onDismissRequest = { showAttachmentMenu = false }, sheetState = sheetState) {
                         PremiumAttachmentHub(
                             onLocation = { 
-                                try {
-                                    fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null)
-                                        .addOnSuccessListener { loc ->
-                                            if (loc != null) {
-                                                sendMessage("📍 Live Location", MessageType.LOCATION, "${loc.latitude},${loc.longitude}")
-                                            } else {
-                                                Toast.makeText(context, "Enhancing GPS accuracy...", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                } catch (e: SecurityException) {
-                                    Toast.makeText(context, "Location permission required", Toast.LENGTH_SHORT).show()
-                                }
+                                val intent = Intent(context, com.example.callruleblocker.data.LocationService::class.java)
+                                context.startForegroundService(intent)
+                                sendMessage("📍 Live Location Shared", MessageType.LIVE_LOCATION, "active")
                                 showAttachmentMenu = false 
                             },
                             onDocument = { docLauncher.launch("*/*"); showAttachmentMenu = false },
@@ -3238,37 +3257,154 @@ private fun ShynaMessageBubble(
                                 }
                             }
                             MessageType.VIDEO -> {
-                                Box(contentAlignment = Alignment.Center) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(240.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color.Black)
+                                ) {
                                     AsyncImage(
                                         model = msg.metadata, 
                                         contentDescription = "Video Thumbnail",
-                                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).aspectRatio(1f),
-                                        contentScale = ContentScale.Crop
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Fit
                                     )
-                                    Surface(shape = CircleShape, color = Color.Black.copy(0.5f), modifier = Modifier.size(48.dp)) {
-                                        Icon(Icons.Filled.PlayArrow, null, tint = Color(0xFFFFFFFF), modifier = Modifier.padding(12.dp))
+                                    Surface(
+                                        shape = CircleShape, 
+                                        color = Color.Black.copy(0.6f), 
+                                        modifier = Modifier.size(64.dp),
+                                        border = BorderStroke(2.dp, Color.White.copy(0.5f))
+                                    ) {
+                                        Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(16.dp).size(32.dp))
+                                    }
+                                    // VIDEO TAG
+                                    Surface(
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                                        color = Color.Black.copy(0.5f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text("VIDEO", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
                             MessageType.VOICE -> {
+                                var playbackSpeed by remember { mutableFloatStateOf(1f) }
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
                                     Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.size(32.dp))
                                     Spacer(Modifier.width(10.dp))
+                                    // WAVEFORM SIMULATION
                                     Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        repeat(18) { i ->
-                                            Box(Modifier.width(2.5.dp).height((8..28).random().dp).background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(1.dp)))
+                                        repeat(20) { i ->
+                                            val barHeight = remember { (10..30).random().dp }
+                                            Box(Modifier.width(2.5.dp).height(barHeight).background(Color.White.copy(alpha = 0.6f), CircleShape))
                                         }
                                     }
                                     Spacer(Modifier.width(10.dp))
-                                    Text("0:12", fontSize = 11.sp, color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold)
+                                    Surface(
+                                        onClick = { 
+                                            playbackSpeed = when(playbackSpeed) {
+                                                1f -> 1.5f
+                                                1.5f -> 2f
+                                                else -> 1f
+                                            }
+                                        },
+                                        color = Color.White.copy(0.15f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text(
+                                            "${playbackSpeed.toString().removeSuffix(".0")}x", 
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Black
+                                        )
+                                    }
+                                }
+                            }
+                            MessageType.LIVE_LOCATION -> {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.MyLocation, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Live Location", fontWeight = FontWeight.ExtraBold, color = ShynaDesign.colors.BrandGreen, fontSize = 12.sp)
+                                    }
+                                    Spacer(Modifier.height(12.dp))
+                                    Box(Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(14.dp)).background(Color.Gray.copy(0.1f))) {
+                                        // Real Dynamic Map Preview placeholder
+                                        Icon(Icons.Outlined.Map, null, tint = Color.White.copy(0.3f), modifier = Modifier.align(Alignment.Center).size(48.dp))
+                                        Text("LIVE UPDATING...", modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp), color = Color.White.copy(0.5f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    if (msg.mine && msg.metadata == "active") {
+                                        TextButton(onClick = { /* Handled in Top Bar */ }, modifier = Modifier.fillMaxWidth()) {
+                                            Text("VIEW REAL-TIME", color = Color.White, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                            MessageType.POLL -> {
+                                Column(Modifier.padding(4.dp)) {
+                                    Text("📊 ${msg.text}", fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = Color.White)
+                                    Spacer(Modifier.height(12.dp))
+                                    listOf("Option 1", "Option 2").forEach { opt ->
+                                        Surface(
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { /* Vote */ },
+                                            color = Color.White.copy(0.1f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(0.5.dp, Color.White.copy(0.2f))
+                                        ) {
+                                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                RadioButton(selected = false, onClick = null, colors = RadioButtonDefaults.colors(unselectedColor = Color.White))
+                                                Spacer(Modifier.width(12.dp))
+                                                Text(opt, color = Color.White)
+                                                Spacer(Modifier.weight(1f))
+                                                Text("0%", fontSize = 12.sp, color = Color.White.copy(0.6f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            MessageType.EVENT -> {
+                                Column(Modifier.padding(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Outlined.CalendarMonth, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("SCHEDULED EVENT", fontWeight = FontWeight.Black, fontSize = 10.sp, color = Color.White.copy(0.7f))
+                                    }
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(msg.text, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp, color = Color.White)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Tomorrow, 10:00 AM", fontSize = 13.sp, color = Color.White.copy(0.8f))
+                                    Spacer(Modifier.height(16.dp))
+                                    Button(
+                                        onClick = { /* RSVP */ },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.15f)),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("I'M GOING", color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
                                 }
                             }
                             MessageType.FILE -> {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(Color.Black.copy(0.1f), RoundedCornerShape(8.dp)).padding(10.dp)) {
-                                    Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, null, tint = Color.White)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.weight(1f))
-                                    Icon(Icons.Outlined.Download, null, tint = Color.White.copy(0.7f), modifier = Modifier.size(18.dp))
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = Color.White.copy(0.1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(0.5.dp, Color.White.copy(0.2f))
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(12.dp)) {
+                                        Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF795548), modifier = Modifier.size(42.dp)) {
+                                            Icon(Icons.AutoMirrored.Outlined.InsertDriveFile, null, tint = Color.White, modifier = Modifier.padding(10.dp))
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                            Text("DOCUMENT", fontSize = 10.sp, color = Color.White.copy(0.6f), fontWeight = FontWeight.Bold)
+                                        }
+                                        IconButton(onClick = { /* Download */ }) {
+                                            Icon(Icons.Outlined.Download, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
                                 }
                             }
                             MessageType.CONTACT -> {

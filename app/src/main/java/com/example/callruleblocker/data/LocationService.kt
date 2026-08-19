@@ -35,11 +35,19 @@ class LocationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "STOP_LIVE_LOCATION") {
+            stopForeground(true)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        
         createNotificationChannel()
         val notification = NotificationCompat.Builder(this, "location_channel")
             .setContentTitle("Sharing Live Location")
             .setContentText("Your location is being shared in real-time.")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "STOP", 
+                PendingIntent.getService(this, 0, Intent(this, LocationService::class.java).apply { action = "STOP_LIVE_LOCATION" }, PendingIntent.FLAG_IMMUTABLE))
             .build()
         
         startForeground(1, notification)

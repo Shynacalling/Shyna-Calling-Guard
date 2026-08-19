@@ -359,7 +359,6 @@ class MainActivity : FragmentActivity() {
             "lastName" to lName,
             "name" to name,
             "phone" to (user.phoneNumber ?: ""),
-            "photoUrl" to (user.photoUrl?.toString() ?: ""),
             "isOnline" to true,
             "activeSessionId" to sessionId,
             "deviceId" to deviceId,
@@ -367,14 +366,20 @@ class MainActivity : FragmentActivity() {
             "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
 
-        db.collection("users").document(user.uid)
-            .set(syncData, com.google.firebase.firestore.SetOptions.merge())
-            .addOnSuccessListener {
-                Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid}")
+        db.collection("users").document(user.uid).get().addOnSuccessListener { doc ->
+            if (doc.exists()) {
+                val currentPhoto = doc.getString("photoUrl")
+                if (currentPhoto.isNullOrBlank() && user.photoUrl != null) {
+                    syncData["photoUrl"] = user.photoUrl.toString()
+                }
+            } else if (user.photoUrl != null) {
+                syncData["photoUrl"] = user.photoUrl.toString()
             }
-            .addOnFailureListener { e ->
-                Log.e("ShynaDiscovery", "PROFILE_SYNC_FAILED uid=${user.uid}", e)
-            }
+            
+            db.collection("users").document(user.uid)
+                .set(syncData, com.google.firebase.firestore.SetOptions.merge())
+                .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid}") }
+        }
     }
 
     fun loginUser(email: String, password: String) {
