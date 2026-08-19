@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -82,12 +83,15 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 private const val TAG = "ShynaDiscovery"
 private const val COMM_PREFS = "smart_communication_v2"
 private enum class LinkTab { CHATS, UPDATES, COMMUNITIES, CALLS, YOU }
 private enum class MessageStatus { SENDING, SENT, DELIVERED, READ }
-private enum class MessageType { TEXT, LOCATION, FILE, VOICE, IMAGE, VIDEO, EVENT, POLL }
+private enum class MessageType { TEXT, LOCATION, FILE, VOICE, IMAGE, VIDEO, EVENT, POLL, CONTACT }
 private enum class EventStatus { UPCOMING, ONGOING, COMPLETED, CANCELLED }
 private enum class EventResponse { NONE, GOING, MAYBE, NOT_GOING }
 private enum class PollStatus { OPEN, CLOSED }
@@ -98,7 +102,7 @@ private data class LocalChatMessage(
     val text: String,
     val mine: Boolean,
     val time: Long,
-    val peerName: String = "Rahul",
+    val peerName: String = "", // Used as senderId in Firestore
     val type: MessageType = MessageType.TEXT,
     val metadata: String? = null,
     val status: MessageStatus = MessageStatus.SENT,
@@ -106,7 +110,8 @@ private data class LocalChatMessage(
     val deliveredAt: Long = 0,
     val readAt: Long = 0,
     val eventId: String? = null,
-    val pollId: String? = null
+    val pollId: String? = null,
+    val senderId: String = ""
 )
 
 private val LinkBlue = Color(0xFF2979FF)
@@ -124,13 +129,21 @@ private val LinkChipSelectedText = Color(0xFF008069)
 private data class RealUser(
     val uid: String, 
     val name: String, 
+    val firstName: String = "",
+    val lastName: String = "",
     val email: String, 
     val phone: String = "", 
     val normalizedPhone: String = "",
     val normalizedEmail: String = "",
     val isOnline: Boolean = false,
     val customUid: String = "",
-    val photoUrl: String? = null
+    val photoUrl: String? = null,
+    val dob: Long? = null,
+    val age: Int? = null,
+    val pincode: String = "",
+    val district: String = "",
+    val state: String = "",
+    val country: String = "India"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -157,19 +170,26 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
 
                 val existingPhone = doc.getString("phone") ?: ""
                 val normalizedPhone = existingPhone.replace(Regex("[^0-9+]"), "")
+                val cUid = doc.getString("customUid") ?: ""
 
-                val syncData = hashMapOf(
-                    "uid" to firebaseUid,
+                val syncData = mutableMapOf<String, Any>(
+                    "uid" to firebaseUid!!,
                     "email" to currentEmail,
                     "normalizedEmail" to normalizedEmail,
                     "name" to safeName,
                     "displayName" to safeName,
-                    "phone" to existingPhone,
-                    "normalizedPhone" to normalizedPhone,
                     "isOnline" to true,
                     "lastSeen" to Timestamp.now(),
                     "updatedAt" to Timestamp.now()
                 )
+                if (existingPhone.isNotEmpty()) {
+                    syncData["phone"] = existingPhone
+                    syncData["normalizedPhone"] = normalizedPhone
+                }
+                if (cUid.isNotEmpty()) {
+                    syncData["customUid"] = cUid
+                }
+                
                 userRef.set(syncData, SetOptions.merge())
             }
         }
@@ -202,7 +222,25 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                         val online = doc.getBoolean("isOnline") ?: false
                         val photoUrl = doc.getString("photoUrl")
                         
-                        RealUser(uid, name, email, phone, normPhone, normEmail, online, cUid, photoUrl)
+                        RealUser(
+                            uid = uid, 
+                            name = name, 
+                            firstName = doc.getString("firstName") ?: "",
+                            lastName = doc.getString("lastName") ?: "",
+                            email = email, 
+                            phone = phone, 
+                            normalizedPhone = normPhone, 
+                            normalizedEmail = normEmail, 
+                            isOnline = online, 
+                            customUid = cUid, 
+                            photoUrl = photoUrl,
+                            dob = doc.getLong("dob"),
+                            age = doc.getLong("age")?.toInt(),
+                            pincode = doc.getString("pincode") ?: "",
+                            district = doc.getString("district") ?: "",
+                            state = doc.getString("state") ?: "",
+                            country = doc.getString("country") ?: "India"
+                        )
                     } ?: emptyList()
                     
                     Log.d(TAG, "Loaded ${users.size} users from Firestore")
@@ -241,11 +279,74 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
     var internetReady by remember { mutableStateOf(hasInternet(context)) }
     var message by remember { mutableStateOf("") }
     var selectedPeer by remember { mutableStateOf<String?>(null) }
-    val allMessages = remember { mutableStateListOf<LocalChatMessage>().apply { addAll(loadMessages(prefs)) } }
+    var locationTargetPeer by remember { mutableStateOf<String?>(null) }
     
+    // NEW: FETCH ACTIVE CHATS FROM FIRESTORE (Robust OR Query)
+    val allMessages = remember { mutableStateListOf<LocalChatMessage>() }
+    DisposableEffect(firebaseUid) {
+        if (firebaseUid != null) {
+            val chatsRef = db.collection("chats")
+            // Listen for chats where user is either user1 or user2
+            val listener = chatsRef.addSnapshotListener { snapshots, _ ->
+                val docs = snapshots?.documents ?: emptyList()
+                val chats = docs.mapNotNull { doc ->
+                    val u1 = doc.getString("user1") ?: ""
+                    val u2 = doc.getString("user2") ?: ""
+                    if (u1 != firebaseUid && u2 != firebaseUid) return@mapNotNull null
+                    
+                    val peer = if (u1 == firebaseUid) u2 else u1
+                    LocalChatMessage(
+                        id = doc.id,
+                        text = doc.getString("lastMessage") ?: "",
+                        mine = false,
+                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
+                        peerName = peer,
+                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT }
+                    )
+                }.sortedByDescending { it.time }
+                
+                allMessages.clear()
+                allMessages.addAll(chats)
+            }
+            onDispose { listener.remove() }
+        } else {
+            onDispose {}
+        }
+    }
+
     var fullScreenMedia by remember { mutableStateOf<LocalChatMessage?>(null) }
     var messageToInfo by remember { mutableStateOf<LocalChatMessage?>(null) }
 
+    if (locationTargetPeer != null) {
+        SendLocationScreen(
+            onBack = { locationTargetPeer = null },
+            onSendLocation = { loc ->
+                val peerId = locationTargetPeer!!
+                val chatId = if (userId < peerId) "${userId}_${peerId}" else "${peerId}_${userId}"
+                val message = hashMapOf(
+                    "senderId" to userId,
+                    "receiverId" to peerId,
+                    "text" to "📍 Shared Location",
+                    "type" to MessageType.LOCATION.name,
+                    "metadata" to loc,
+                    "timestamp" to com.google.firebase.Timestamp.now()
+                )
+                val chatUpdate = hashMapOf(
+                    "user1" to if (userId < peerId) userId else peerId,
+                    "user2" to if (userId < peerId) userId else peerId,
+                    "lastMessage" to "📍 Location",
+                    "type" to MessageType.LOCATION.name,
+                    "timestamp" to com.google.firebase.Timestamp.now()
+                )
+                db.collection("chats").document(chatId).set(chatUpdate, SetOptions.merge())
+                db.collection("chats").document(chatId).collection("messages").add(message)
+                
+                locationTargetPeer = null
+            }
+        )
+        return
+    }
+    
     if (selectedPeer != null) {
         SmartChatDetailScreen(
             peerId = selectedPeer!!, 
@@ -254,7 +355,8 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
             allMessages = allMessages, 
             allRealUsers = allRealUsers,
             onBack = { selectedPeer = null },
-            onOpenMedia = { fullScreenMedia = it }
+            onOpenMedia = { fullScreenMedia = it },
+            onLocationClick = { locationTargetPeer = it }
         )
         return
     }
@@ -352,7 +454,13 @@ fun SmartCommunicationScreen(initialOnline: Boolean, onBack: () -> Unit) {
                         onOpenMedia = { fullScreenMedia = it }
                     )
                     LinkTab.YOU -> YouPage(
-                        currentUser = allRealUsers.find { it.uid == firebaseUid } ?: RealUser(firebaseUid ?: "", auth.currentUser?.displayName ?: "Me", auth.currentUser?.email ?: "", "", "", "", true, ""),
+                        currentUser = allRealUsers.find { it.uid == firebaseUid } ?: RealUser(
+                            uid = firebaseUid ?: "", 
+                            name = auth.currentUser?.displayName ?: "Me", 
+                            email = auth.currentUser?.email ?: "",
+                            normalizedEmail = auth.currentUser?.email?.lowercase() ?: "",
+                            isOnline = true
+                        ),
                         onLogout = { auth.signOut() }
                     )
                     else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { 
@@ -597,9 +705,6 @@ private fun hasInternet(context: Context): Boolean {
     return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }
 
-private fun loadMessages(prefs: android.content.SharedPreferences): List<LocalChatMessage> = emptyList()
-private fun saveMessages(prefs: android.content.SharedPreferences, messages: List<LocalChatMessage>) {}
-
 @Composable private fun MenuItem(text: String, icon: ImageVector, onClick: () -> Unit) { DropdownMenuItem(text = { Text(text) }, leadingIcon = { Icon(icon, null) }, onClick = onClick) }
 
 private data class ChatRowItem(val id: String, val name: String, val lastMessage: LocalChatMessage?, val isOnline: Boolean, val matchSearch: Boolean, val subtitle: String = "")
@@ -610,14 +715,73 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
     val context = LocalContext.current
     val auth = remember { com.google.firebase.auth.FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
+    val scope = rememberCoroutineScope()
     
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var customUid by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    
+    // NEW REGISTRATION FIELDS
+    var firstName by remember { mutableStateOf("") }
+    var lastName by remember { mutableStateOf("") }
+    var dob by remember { mutableStateOf<Long?>(null) }
+    var pincode by remember { mutableStateOf("") }
+    var district by remember { mutableStateOf("") }
+    var state by remember { mutableStateOf("") }
+    val country = "India"
+    
     var isSignUp by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    
+    // Google Sign-In States
+    var isGoogleConfirmationMode by remember { mutableStateOf(false) }
+    var googleUserUid by remember { mutableStateOf("") }
+
+    // PINCODE LOOKUP LOGIC
+    LaunchedEffect(pincode) {
+        if (pincode.length == 6) {
+            loading = true
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val response = java.net.URL("https://api.postalpincode.in/pincode/$pincode").readText()
+                    if (response.contains("Success")) {
+                        // Very basic parsing since I don't have a JSON library like Gson/Moshi handy
+                        // We'll extract District and State using regex or simple splits
+                        val districtMatch = Regex("\"District\":\"(.*?)\"").find(response)
+                        val stateMatch = Regex("\"State\":\"(.*?)\"").find(response)
+                        
+                        districtMatch?.groupValues?.get(1)?.let { district = it }
+                        stateMatch?.groupValues?.get(1)?.let { state = it }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Pincode lookup failed", e)
+            } finally {
+                loading = false
+            }
+        }
+    }
+    
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState()
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    dob = datePickerState.selectedDateMillis
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
 
     // Premium Background Animation
     val infiniteTransition = rememberInfiniteTransition(label = "auth_bg")
@@ -712,24 +876,101 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                     Modifier.padding(28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Crossfade(targetState = isSignUp, label = "auth_mode") { signup ->
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = if (signup) "Create Account" else "Welcome Back",
-                                fontSize = 30.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Text(
-                                text = if (signup) "Start your premium calling journey" else "Secure sign in to Shyna Calling",
-                                fontSize = 14.sp,
-                                color = Color.White.copy(alpha = 0.5f),
-                                modifier = Modifier.padding(top = 6.dp, bottom = 32.dp)
-                            )
+                    if (isGoogleConfirmationMode) {
+                        Text(
+                            text = "Complete Profile",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Confirm these details to finish linking your Google account",
+                            fontSize = 13.sp,
+                            color = Color.White.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
+                        )
+                    } else {
+                        if (isGoogleConfirmationMode) {
+                        Text(
+                            text = "Complete Profile",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Confirm these details to finish linking your Google account",
+                            fontSize = 13.sp,
+                            color = Color.White.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp)
+                        )
+                    } else {
+                        Crossfade(targetState = isSignUp, label = "auth_mode") { signup ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = if (signup) "Create Account" else "Welcome Back",
+                                    fontSize = 30.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = if (signup) "Start your premium calling journey" else "Secure sign in to Shyna Calling",
+                                    fontSize = 14.sp,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    modifier = Modifier.padding(top = 6.dp, bottom = 32.dp)
+                                )
+                            }
                         }
                     }
+                    }
 
-                    if (isSignUp) {
+                    if (isSignUp || isGoogleConfirmationMode) {
+                        if (!isGoogleConfirmationMode) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                AuthTextField(
+                                    value = firstName,
+                                    onValueChange = { firstName = it },
+                                    label = "First Name",
+                                    icon = Icons.Outlined.Badge,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                AuthTextField(
+                                    value = lastName,
+                                    onValueChange = { lastName = it },
+                                    label = "Last Name",
+                                    icon = Icons.Outlined.Badge,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Spacer(Modifier.height(18.dp))
+
+                            // Date of Birth Button
+                            Surface(
+                                onClick = { showDatePicker = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(20.dp),
+                                color = Color.White.copy(0.08f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(0.15f))
+                            ) {
+                                Row(
+                                    Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Outlined.CalendarMonth, null, tint = LinkCyan, modifier = Modifier.size(22.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    val dobText = remember(dob) {
+                                        if (dob == null) "Date of Birth" 
+                                        else SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(dob!!))
+                                    }
+                                    Text(
+                                        text = dobText,
+                                        color = if (dob == null) Color.White.copy(0.5f) else Color.White,
+                                        fontSize = 16.sp
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(18.dp))
+                        }
+
                         AuthTextField(
                             value = customUid,
                             onValueChange = { customUid = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' } },
@@ -745,33 +986,64 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                             keyboardType = KeyboardType.Phone
                         )
                         Spacer(Modifier.height(18.dp))
+
+                        if (!isGoogleConfirmationMode) {
+                            AuthTextField(
+                                value = pincode,
+                                onValueChange = { if(it.length <= 6) pincode = it },
+                                label = "Pincode",
+                                icon = Icons.Outlined.LocationOn,
+                                keyboardType = KeyboardType.Number
+                            )
+                            Spacer(Modifier.height(18.dp))
+
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                AuthTextField(
+                                    value = district,
+                                    onValueChange = { district = it },
+                                    label = "District",
+                                    icon = Icons.Outlined.HomeWork,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                AuthTextField(
+                                    value = state,
+                                    onValueChange = { state = it },
+                                    label = "State",
+                                    icon = Icons.Outlined.Map,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Spacer(Modifier.height(18.dp))
+                        }
                     }
 
-                    AuthTextField(
-                        value = email,
-                        onValueChange = { email = it },
-                        label = "Email Address",
-                        icon = Icons.Outlined.AlternateEmail,
-                        keyboardType = KeyboardType.Email
-                    )
-                    Spacer(Modifier.height(18.dp))
+                    if (!isGoogleConfirmationMode) {
+                        AuthTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = "Email Address",
+                            icon = Icons.Outlined.AlternateEmail,
+                            keyboardType = KeyboardType.Email
+                        )
+                        Spacer(Modifier.height(18.dp))
 
-                    AuthTextField(
-                        value = password,
-                        onValueChange = { password = it },
-                        label = "Secure Password",
-                        icon = Icons.Outlined.Lock,
-                        isPassword = true,
-                        passwordVisible = passwordVisible,
-                        onVisibilityChange = { passwordVisible = !passwordVisible }
-                    )
+                        AuthTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = "Secure Password",
+                            icon = Icons.Outlined.Lock,
+                            isPassword = true,
+                            passwordVisible = passwordVisible,
+                            onVisibilityChange = { passwordVisible = !passwordVisible }
+                        )
 
-                    if (!isSignUp) {
-                        TextButton(
-                            onClick = { /* login link logic */ },
-                            modifier = Modifier.align(Alignment.End)
-                        ) {
-                            Text("Fast Login Link", color = LinkCyan.copy(0.8f), fontSize = 13.sp)
+                        if (!isSignUp) {
+                            TextButton(
+                                onClick = { /* login link logic */ },
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Text("Fast Login Link", color = LinkCyan.copy(0.8f), fontSize = 13.sp)
+                            }
                         }
                     }
 
@@ -784,25 +1056,68 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                     } else {
                         Button(
                             onClick = {
+                                if (isGoogleConfirmationMode) {
+                                    if (customUid.isBlank() || phone.isBlank()) {
+                                        Toast.makeText(context, "User ID and Phone are mandatory", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+                                    loading = true
+                                    val updates = hashMapOf(
+                                        "customUid" to customUid.trim().lowercase(),
+                                        "phone" to phone.trim(),
+                                        "normalizedPhone" to phone.trim().replace(Regex("[^0-9+]"), ""),
+                                        "updatedAt" to Timestamp.now()
+                                    )
+                                    db.collection("users").document(googleUserUid)
+                                        .set(updates, SetOptions.merge())
+                                        .addOnSuccessListener {
+                                            loading = false
+                                            isGoogleConfirmationMode = false
+                                            Toast.makeText(context, "Profile complete!", Toast.LENGTH_SHORT).show()
+                                            onLoginSuccess()
+                                        }
+                                    return@Button
+                                }
+
                                 if (email.isBlank() || password.isBlank()) {
                                     Toast.makeText(context, "Fields cannot be empty", Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
                                 loading = true
                                 if (isSignUp) {
+                                    if (firstName.isBlank() || lastName.isBlank() || dob == null || pincode.length < 6) {
+                                        Toast.makeText(context, "Please complete all profile details", Toast.LENGTH_SHORT).show()
+                                        loading = false
+                                        return@Button
+                                    }
+                                    
                                     auth.createUserWithEmailAndPassword(email.trim(), password).addOnCompleteListener { task ->
                                         if (task.isSuccessful) {
                                             val user = auth.currentUser
                                             val uid = user?.uid ?: return@addOnCompleteListener
                                             val normEmail = email.trim().lowercase()
                                             val normPhone = phone.trim().replace(Regex("[^0-9+]"), "")
+                                            
+                                            val birthCal = Calendar.getInstance().apply { timeInMillis = dob!! }
+                                            val birthYear = birthCal.get(Calendar.YEAR)
+                                            val currentYear = Calendar.getInstance().get(Calendar.YEAR)
+                                            val calculatedAge = currentYear - birthYear
+
                                             val userMap = hashMapOf(
                                                 "uid" to uid, 
+                                                "firstName" to firstName.trim(),
+                                                "lastName" to lastName.trim(),
+                                                "name" to "$firstName $lastName".trim(),
+                                                "displayName" to "$firstName $lastName".trim(),
+                                                "dob" to dob,
+                                                "age" to calculatedAge,
+                                                "pincode" to pincode.trim(),
+                                                "district" to district.trim(),
+                                                "state" to state.trim(),
+                                                "country" to "India",
                                                 "customUid" to customUid.trim().lowercase(), 
                                                 "email" to email.trim(), 
                                                 "normalizedEmail" to normEmail,
-                                                "name" to email.substringBefore("@"), 
-                                                "displayName" to email.substringBefore("@"),
                                                 "phone" to phone.trim(), 
                                                 "normalizedPhone" to normPhone,
                                                 "isOnline" to true, 
@@ -810,7 +1125,7 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                                 "updatedAt" to Timestamp.now()
                                             )
                                             db.collection("users").document(uid).set(userMap, SetOptions.merge()).addOnSuccessListener { 
-                                                Toast.makeText(context, "Account created successfully!", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "Welcome to Shyna Calling!", Toast.LENGTH_SHORT).show()
                                                 onLoginSuccess() 
                                             }
                                         } else {
@@ -850,8 +1165,10 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                                 containerColor = Color.White.copy(alpha = 0.25f)
                             )
                         ) {
+                            val btnText = if (isGoogleConfirmationMode) "FINISH SETUP" 
+                                          else if (isSignUp) "GET STARTED" else "LOG IN"
                             Text(
-                                if (isSignUp) "GET STARTED" else "LOG IN", 
+                                btnText, 
                                 fontWeight = FontWeight.ExtraBold, 
                                 color = Color.White, 
                                 letterSpacing = 2.sp,
@@ -860,34 +1177,54 @@ private fun ShynaAuthScreen(onBack: () -> Unit, onLoginSuccess: () -> Unit) {
                         }
                     }
 
-                    Spacer(Modifier.height(36.dp))
+                    if (!isGoogleConfirmationMode) {
+                        Spacer(Modifier.height(36.dp))
 
-                    // Premium Social and Toggle Row
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        OutlinedButton(
-                            onClick = { 
-                                Toast.makeText(context, "Google integration available soon", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.weight(1.1f).height(52.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Outlined.GTranslate, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text("Google", color = Color.White, fontSize = 14.sp)
+                        // Premium Social and Toggle Row
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            OutlinedButton(
+                                onClick = { 
+                                    // Simulation of Google Sign-In Result
+                                    loading = true
+                                    Toast.makeText(context, "Connecting Google Account...", Toast.LENGTH_SHORT).show()
+                                    scope.launch {
+                                        kotlinx.coroutines.delay(1500)
+                                        loading = false
+                                        isGoogleConfirmationMode = true
+                                        googleUserUid = "simulated_google_uid"
+                                        email = "user_from_google@gmail.com"
+                                        firstName = "Google"
+                                        lastName = "User"
+                                    }
+                                },
+                                modifier = Modifier.weight(1.1f).height(52.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Outlined.GTranslate, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Google", color = Color.White, fontSize = 14.sp)
+                                }
+                            }
+
+                            Button(
+                                onClick = { 
+                                    isSignUp = !isSignUp 
+                                },
+                                modifier = Modifier.weight(0.9f).height(52.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = LinkCyan.copy(alpha = 0.15f))
+                            ) {
+                                Text(if (isSignUp) "Login" else "Register", color = Color.White, fontWeight = FontWeight.SemiBold)
                             }
                         }
-
-                        Button(
-                            onClick = { 
-                                isSignUp = !isSignUp 
-                            },
-                            modifier = Modifier.weight(0.9f).height(52.dp),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = LinkCyan.copy(alpha = 0.15f))
+                    } else {
+                        TextButton(
+                            onClick = { isGoogleConfirmationMode = false },
+                            modifier = Modifier.padding(top = 16.dp)
                         ) {
-                            Text(if (isSignUp) "Login" else "Register", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("Cancel Google linking", color = Color.White.copy(0.5f))
                         }
                     }
                 }
@@ -925,6 +1262,7 @@ private fun AuthTextField(
     onValueChange: (String) -> Unit,
     label: String,
     icon: ImageVector,
+    modifier: Modifier = Modifier,
     isPassword: Boolean = false,
     passwordVisible: Boolean = false,
     onVisibilityChange: () -> Unit = {},
@@ -935,7 +1273,9 @@ private fun AuthTextField(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp),
         placeholder = { Text(label, color = Color.White.copy(alpha = 0.35f), fontSize = 15.sp) },
         leadingIcon = { 
             Icon(
@@ -981,9 +1321,40 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrDefault("1.0.0")
     }
 
+    var isEditing by remember { mutableStateOf(false) }
+    var editFirstName by remember { mutableStateOf(currentUser.firstName) }
+    var editLastName by remember { mutableStateOf(currentUser.lastName) }
+    var editPhone by remember { mutableStateOf(currentUser.phone) }
+    var editPincode by remember { mutableStateOf(currentUser.pincode) }
+    var editDistrict by remember { mutableStateOf(currentUser.district) }
+    var editState by remember { mutableStateOf(currentUser.state) }
+    var editDob by remember { mutableStateOf(currentUser.dob) }
+    var editCustomUid by remember { mutableStateOf(currentUser.customUid) }
+
+    // Auto-fill logic for pincode in Edit Profile
+    LaunchedEffect(editPincode) {
+        if (editPincode.length == 6) {
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val response = java.net.URL("https://api.postalpincode.in/pincode/$editPincode").readText()
+                    if (response.contains("Success")) {
+                        val districtMatch = Regex("\"District\":\"(.*?)\"").find(response)
+                        val stateMatch = Regex("\"State\":\"(.*?)\"").find(response)
+                        districtMatch?.groupValues?.get(1)?.let { editDistrict = it }
+                        stateMatch?.groupValues?.get(1)?.let { editState = it }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Pincode lookup failed in YouPage", e)
+            }
+        }
+    }
+
     var showImagePicker by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var isUploading by remember { mutableStateOf(false) }
+    var isSavingProfile by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -991,6 +1362,24 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
         if (uri != null) {
             selectedImageUri = uri
             showImagePicker = true
+        }
+    }
+
+    if (showDatePicker) {
+        val datePickerState = rememberDatePickerState(initialSelectedDateMillis = editDob)
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    editDob = datePickerState.selectedDateMillis
+                    showDatePicker = false
+                }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
         }
     }
 
@@ -1040,7 +1429,72 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(24.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = if (isEditing) "Edit Profile" else "Your Profile",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = LinkText
+            )
+            
+            if (isEditing) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { isEditing = false }) {
+                        Text("Cancel", color = Color.Gray)
+                    }
+                    if (isSavingProfile) {
+                        CircularProgressIndicator(Modifier.size(24.dp), color = LinkCyan)
+                    } else {
+                        Button(
+                            onClick = {
+                                isSavingProfile = true
+                                val updates = hashMapOf(
+                                    "firstName" to editFirstName.trim(),
+                                    "lastName" to editLastName.trim(),
+                                    "name" to "${editFirstName.trim()} ${editLastName.trim()}".trim(),
+                                    "customUid" to editCustomUid.trim().lowercase(),
+                                    "phone" to editPhone.trim(),
+                                    "normalizedPhone" to editPhone.trim().replace(Regex("[^0-9+]"), ""),
+                                    "pincode" to editPincode.trim(),
+                                    "district" to editDistrict.trim(),
+                                    "state" to editState.trim(),
+                                    "dob" to editDob,
+                                    "updatedAt" to Timestamp.now()
+                                )
+                                db.collection("users").document(currentUser.uid)
+                                    .set(updates, SetOptions.merge())
+                                    .addOnSuccessListener {
+                                        isSavingProfile = false
+                                        isEditing = false
+                                        Toast.makeText(context, "Profile updated!", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .addOnFailureListener {
+                                        isSavingProfile = false
+                                        Toast.makeText(context, "Update failed", Toast.LENGTH_SHORT).show()
+                                    }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = LinkCyan),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Save", color = Color.White)
+                        }
+                    }
+                }
+            } else {
+                IconButton(
+                    onClick = { isEditing = true },
+                    modifier = Modifier.background(LinkBlue.copy(0.1f), CircleShape)
+                ) {
+                    Icon(Icons.Outlined.Edit, "Edit", tint = LinkBlue)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(32.dp))
         
         Box(contentAlignment = Alignment.BottomEnd) {
             Surface(
@@ -1082,31 +1536,98 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
         }
 
         Spacer(Modifier.height(24.dp))
-        Text(currentUser.name, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = LinkText)
-        Text(if (currentUser.customUid.isNotEmpty()) "@${currentUser.customUid}" else "No User ID set", color = LinkMuted, fontSize = 16.sp)
+        
+        if (isEditing) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditField(value = editFirstName, onValueChange = { editFirstName = it }, label = "First Name", Modifier.weight(1f))
+                EditField(value = editLastName, onValueChange = { editLastName = it }, label = "Last Name", Modifier.weight(1f))
+            }
+        } else {
+            Text(currentUser.name, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = LinkText)
+            Text(if (currentUser.customUid.isNotEmpty()) "@${currentUser.customUid}" else "No User ID set", color = LinkMuted, fontSize = 16.sp)
+        }
 
         Spacer(Modifier.height(40.dp))
 
-        ProfileInfoCard(label = "User ID", value = currentUser.customUid.ifEmpty { "Not set" }, icon = Icons.Outlined.AccountCircle)
-        ProfileInfoCard(label = "Email Address", value = currentUser.email, icon = Icons.Outlined.AlternateEmail)
-        ProfileInfoCard(label = "Mobile Number", value = currentUser.phone.ifEmpty { "Not linked" }, icon = Icons.Outlined.Phone)
-        ProfileInfoCard(label = "App Version", value = "v$appVersion Premium", icon = Icons.Outlined.Verified)
+        if (isEditing) {
+            EditField(value = editCustomUid, onValueChange = { editCustomUid = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' } }, label = "User ID (Handle)")
+            EditField(value = editPhone, onValueChange = { editPhone = it }, label = "Mobile Number", keyboardType = KeyboardType.Phone)
+            
+            // Editable DOB
+            Surface(
+                onClick = { showDatePicker = true },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = Color.White,
+                shadowElevation = 1.dp,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF0F2F5))
+            ) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.CalendarMonth, null, tint = LinkBlue, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(16.dp))
+                    val formattedDob = remember(editDob) {
+                        if (editDob == null) "Select Birth Date"
+                        else SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(editDob!!))
+                    }
+                    Text(
+                        text = formattedDob,
+                        color = LinkText,
+                        fontSize = 16.sp
+                    )
+                }
+            }
+
+            EditField(value = editPincode, onValueChange = { editPincode = it }, label = "Pincode", keyboardType = KeyboardType.Number)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EditField(value = editDistrict, onValueChange = { editDistrict = it }, label = "District", Modifier.weight(1f))
+                EditField(value = editState, onValueChange = { editState = it }, label = "State", Modifier.weight(1f))
+            }
+            
+            ProfileInfoCard(label = "Email Address (Fixed)", value = currentUser.email, icon = Icons.Outlined.AlternateEmail)
+        } else {
+            ProfileInfoCard(label = "User ID", value = currentUser.customUid.ifEmpty { "Not set" }, icon = Icons.Outlined.AccountCircle)
+            ProfileInfoCard(label = "Date of Birth", value = currentUser.dob?.let { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it)) } ?: "Not set", icon = Icons.Outlined.CalendarMonth)
+            ProfileInfoCard(label = "Location", value = listOfNotNull(currentUser.district.ifEmpty { null }, currentUser.state.ifEmpty { null }, "India").joinToString(", "), icon = Icons.Outlined.LocationOn)
+            ProfileInfoCard(label = "Email Address", value = currentUser.email, icon = Icons.Outlined.AlternateEmail)
+            ProfileInfoCard(label = "Mobile Number", value = currentUser.phone.ifEmpty { "Not linked" }, icon = Icons.Outlined.Phone)
+            ProfileInfoCard(label = "App Version", value = "v$appVersion Premium", icon = Icons.Outlined.Verified)
+        }
 
         Spacer(Modifier.height(48.dp))
 
-        Button(
-            onClick = onLogout,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53E36).copy(alpha = 0.9f)),
-            shape = RoundedCornerShape(16.dp),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
-        ) {
-            Icon(Icons.AutoMirrored.Outlined.Logout, null)
-            Spacer(Modifier.width(12.dp))
-            Text("LOGOUT FROM SHYNA", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        if (!isEditing) {
+            Button(
+                onClick = onLogout,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53E36).copy(alpha = 0.9f)),
+                shape = RoundedCornerShape(16.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.Logout, null)
+                Spacer(Modifier.width(12.dp))
+                Text("LOGOUT FROM SHYNA", fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            }
         }
         Spacer(Modifier.height(32.dp))
     }
+}
+
+@Composable
+private fun EditField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier, keyboardType: KeyboardType = KeyboardType.Text) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
+        label = { Text(label) },
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        shape = RoundedCornerShape(16.dp),
+        singleLine = true,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = LinkCyan,
+            unfocusedBorderColor = Color.LightGray,
+            focusedLabelColor = LinkCyan
+        )
+    )
 }
 
 @Composable
@@ -1258,32 +1779,413 @@ private fun ProfileImageEditorDialog(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun SmartChatDetailScreen(peerId: String, prefs: android.content.SharedPreferences, userId: String, allMessages: List<LocalChatMessage>, allRealUsers: List<RealUser>, onBack: () -> Unit, onOpenMedia: (LocalChatMessage) -> Unit) {
+@Composable
+private fun SmartChatDetailScreen(
+    peerId: String, 
+    prefs: android.content.SharedPreferences, 
+    userId: String, 
+    allMessages: List<LocalChatMessage>, 
+    allRealUsers: List<RealUser>, 
+    onBack: () -> Unit, 
+    onOpenMedia: (LocalChatMessage) -> Unit,
+    onLocationClick: (String) -> Unit = {}
+) {
+    val context = LocalContext.current
+    val db = remember { FirebaseFirestore.getInstance() }
     val peer = allRealUsers.find { it.uid == peerId }
     val peerName = peer?.name ?: "Shyna User"
-    var text by remember { mutableStateOf("") }
+    val chatId = remember(userId, peerId) { if (userId < peerId) "${userId}_${peerId}" else "${peerId}_${userId}" }
     
+    var text by remember { mutableStateOf("") }
+    val chatMessages = remember { mutableStateListOf<LocalChatMessage>() }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    var showAttachmentMenu by remember { mutableStateOf(false) }
+    var showContactPicker by remember { mutableStateOf(false) }
+
+    // REAL-TIME FIRESTORE LISTENER
+    DisposableEffect(chatId) {
+        val listener = db.collection("chats").document(chatId).collection("messages")
+            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null) {
+                    Log.e(TAG, "Chat listener error: ${error.message}")
+                    return@addSnapshotListener
+                }
+                val newMessages = snapshots?.documents?.mapNotNull { doc ->
+                    val sId = doc.getString("senderId") ?: ""
+                    LocalChatMessage(
+                        id = doc.id,
+                        text = doc.getString("text") ?: "",
+                        mine = sId == userId,
+                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
+                        peerName = if (sId == userId) peerId else userId,
+                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
+                        metadata = doc.getString("metadata"),
+                        senderId = sId
+                    )
+                } ?: emptyList()
+                chatMessages.clear()
+                chatMessages.addAll(newMessages)
+                
+                // Auto scroll to bottom
+                if (newMessages.isNotEmpty()) {
+                    scope.launch {
+                        listState.animateScrollToItem(newMessages.size - 1)
+                    }
+                }
+            }
+        onDispose { listener.remove() }
+    }
+
+    val sendMessage = { msgText: String, type: MessageType, metadata: String? ->
+        if (msgText.isNotBlank() || type != MessageType.TEXT) {
+            val message = hashMapOf(
+                "senderId" to userId,
+                "receiverId" to peerId,
+                "text" to msgText,
+                "type" to type.name,
+                "metadata" to metadata,
+                "timestamp" to com.google.firebase.Timestamp.now()
+            )
+
+            val chatUpdate = hashMapOf(
+                "user1" to if (userId < peerId) userId else peerId,
+                "user2" to if (userId < peerId) peerId else userId,
+                "lastMessage" to when(type) {
+                    MessageType.TEXT -> msgText
+                    MessageType.LOCATION -> "📍 Location"
+                    MessageType.FILE -> "📄 Document"
+                    MessageType.CONTACT -> "👤 Contact"
+                    MessageType.IMAGE -> "📷 Image"
+                    else -> "New message"
+                },
+                "type" to type.name,
+                "timestamp" to com.google.firebase.Timestamp.now()
+            )
+
+            db.collection("chats").document(chatId).set(chatUpdate, SetOptions.merge())
+            db.collection("chats").document(chatId).collection("messages").add(message)
+                .addOnSuccessListener { text = "" }
+                .addOnFailureListener { Toast.makeText(context, "Failed to send", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { sendMessage(it.lastPathSegment ?: "Document", MessageType.FILE, it.toString()) }
+    }
+    
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { sendMessage("Sent an image", MessageType.IMAGE, it.toString()) }
+    }
+    
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        bitmap?.let { 
+            // In a real app, upload to Firebase Storage and get URL
+            sendMessage("Sent a photo", MessageType.IMAGE, "bitmap_placeholder") 
+        }
+    }
+    
+    val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        uri?.let { sendMessage(it.lastPathSegment ?: "Audio", MessageType.VOICE, it.toString()) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Column { Text(peerName, fontSize = 18.sp, fontWeight = FontWeight.Bold); Text(if (peer?.isOnline == true) "Online" else "Offline", fontSize = 12.sp, color = if (peer?.isOnline == true) LinkGreen else Color.Gray) } },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = CircleShape, modifier = Modifier.size(38.dp), color = Color.White.copy(0.2f)) {
+                            if (peer?.photoUrl != null) {
+                                AsyncImage(model = peer.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                            } else {
+                                Icon(Icons.Outlined.Person, null, tint = Color.White, modifier = Modifier.padding(8.dp))
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(peerName, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (peer?.isOnline == true) "online" else "last seen recently",
+                                fontSize = 12.sp,
+                                color = if (peer?.isOnline == true) Color(0xFFB3E5FC) else Color.White.copy(0.7f)
+                            )
+                        }
+                    }
+                },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null) } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF006B5E), titleContentColor = Color.White, navigationIconContentColor = Color.White)
+                actions = {
+    IconButton(onClick = { /* Call */ }) { Icon(Icons.Outlined.Call, null) }
+    IconButton(onClick = { /* More */ }) { Icon(Icons.Outlined.MoreVert, null) }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color(0xFF005D4B), 
+                    titleContentColor = Color.White, 
+                    navigationIconContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                )
             )
         },
         bottomBar = {
-            BottomAppBar(containerColor = Color.White, modifier = Modifier.imePadding()) {
-                Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.weight(1f), placeholder = { Text("Message") }, shape = CircleShape)
-                    Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = { if (text.isNotBlank()) { /* send logic */ text = "" } }, colors = IconButtonDefaults.iconButtonColors(containerColor = LinkChipSelectedText, contentColor = Color.White)) { Icon(Icons.AutoMirrored.Outlined.Send, null) }
+            Column {
+                if (showAttachmentMenu) {
+                    PremiumAttachmentHub(
+                        onLocation = { 
+                            onLocationClick(peerId)
+                            showAttachmentMenu = false 
+                        },
+                        onDocument = { 
+                            docLauncher.launch("*/*")
+                            showAttachmentMenu = false 
+                        },
+                        onContact = { 
+                            showContactPicker = true
+                            showAttachmentMenu = false 
+                        },
+                        onGallery = { 
+                            galleryLauncher.launch("image/*")
+                            showAttachmentMenu = false 
+                        },
+                        onCamera = { 
+                            cameraLauncher.launch(null)
+                            showAttachmentMenu = false 
+                        },
+                        onAudio = { 
+                            audioLauncher.launch("audio/*")
+                            showAttachmentMenu = false 
+                        }
+                    )
+                }
+                
+                Surface(color = Color.White, shadowElevation = 8.dp) {
+                    Row(
+                        Modifier.padding(horizontal = 8.dp, vertical = 10.dp).imePadding(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(24.dp),
+                            color = Color(0xFFF0F2F5)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+                                IconButton(onClick = { /* Emoji */ }) { Icon(Icons.Outlined.EmojiEmotions, null, tint = Color.Gray) }
+                                BasicTextField(
+                                    value = text,
+                                    onValueChange = { text = it },
+                                    modifier = Modifier.weight(1f).padding(vertical = 12.dp),
+                                    textStyle = TextStyle(fontSize = 16.sp),
+                                    decorationBox = { innerTextField ->
+                                        if (text.isEmpty()) Text("Message", color = Color.Gray)
+                                        innerTextField()
+                                    }
+                                )
+                                IconButton(onClick = { showAttachmentMenu = !showAttachmentMenu }) { 
+                                    Icon(
+                                        imageVector = if (showAttachmentMenu) Icons.Outlined.Close else Icons.Outlined.AttachFile, 
+                                        null, 
+                                        tint = Color.Gray,
+                                        modifier = Modifier.graphicsLayer { rotationZ = if (showAttachmentMenu) 0f else -45f }
+                                    ) 
+                                }
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        FloatingActionButton(
+                            onClick = { 
+                                if (text.isNotBlank()) {
+                                    sendMessage(text, MessageType.TEXT, null)
+                                } else {
+                                    // Voice record placeholder
+                                }
+                            },
+                            modifier = Modifier.size(48.dp),
+                            shape = CircleShape,
+                            containerColor = Color(0xFF00A884),
+                            contentColor = Color.White,
+                            elevation = FloatingActionButtonDefaults.elevation(0.dp)
+                        ) {
+                            Icon(if (text.isBlank()) Icons.Outlined.Mic else Icons.AutoMirrored.Outlined.Send, null)
+                        }
+                    }
                 }
             }
         }
     ) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize().background(Color(0xFFEFEAE2))) {
-            Text("Chat with $peerName coming soon in this UI build.", Modifier.align(Alignment.Center), color = LinkMuted)
+        Box(
+            Modifier.padding(padding).fillMaxSize()
+        ) {
+            // High-end Premium Chat Background (Pattern-like)
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawRect(color = Color(0xFFEFE7DE))
+                // Subtle pattern lines
+                val stroke = 1.dp.toPx()
+                for (i in 0..size.width.toInt() step 60) {
+                    drawLine(Color.White.copy(0.15f), Offset(i.toFloat(), 0f), Offset(i.toFloat(), size.height), stroke)
+                }
+                for (i in 0..size.height.toInt() step 60) {
+                    drawLine(Color.White.copy(0.15f), Offset(0f, i.toFloat()), Offset(size.width, i.toFloat()), stroke)
+                }
+            }
+            
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(chatMessages) { msg ->
+                    ShynaMessageBubble(msg)
+                }
+            }
         }
+    }
+
+    if (showContactPicker) {
+        AlertDialog(
+            onDismissRequest = { showContactPicker = false },
+            title = { Text("Select Contact to Share") },
+            text = {
+                LazyColumn {
+                    items(allRealUsers) { u ->
+                        if (u.uid != userId) {
+                            ShynaContactRow(
+                                name = u.name,
+                                subtitle = u.email,
+                                preview = "Share this contact",
+                                icon = Icons.Outlined.AccountBox,
+                                date = "",
+                                online = u.isOnline,
+                                onClick = {
+                                    sendMessage(u.name, MessageType.CONTACT, u.uid)
+                                    showContactPicker = false
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showContactPicker = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+@Composable
+private fun ShynaMessageBubble(msg: LocalChatMessage) {
+    val alignment = if (msg.mine) Alignment.End else Alignment.Start
+    val color = if (msg.mine) Color(0xFFD9FDD3) else Color.White
+    val shape = RoundedCornerShape(
+        topStart = 12.dp,
+        topEnd = 12.dp,
+        bottomStart = if (msg.mine) 12.dp else 0.dp,
+        bottomEnd = if (msg.mine) 0.dp else 12.dp
+    )
+
+    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = alignment) {
+        Surface(
+            color = color,
+            shape = shape,
+            shadowElevation = 1.dp,
+            modifier = Modifier.widthIn(max = 300.dp)
+        ) {
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                when(msg.type) {
+                    MessageType.LOCATION -> {
+                        Column {
+                            Text("📍 Shared Location", fontWeight = FontWeight.Bold, color = Color(0xFF007AFF))
+                            Box(Modifier.fillMaxWidth().height(120.dp).background(Color.LightGray, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Outlined.Map, null, modifier = Modifier.size(40.dp), tint = Color.Gray)
+                            }
+                            Text(msg.text, fontSize = 14.sp)
+                        }
+                    }
+                    MessageType.FILE -> {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(Color.Black.copy(0.05f), RoundedCornerShape(8.dp)).padding(8.dp)) {
+                            Icon(Icons.Outlined.Description, null, tint = Color(0xFFE53935))
+                            Spacer(Modifier.width(8.dp))
+                            Text(msg.text, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    MessageType.CONTACT -> {
+                        Column(Modifier.background(Color.Black.copy(0.05f), RoundedCornerShape(8.dp)).padding(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.AccountCircle, null, tint = Color.Gray, modifier = Modifier.size(32.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(msg.text, fontWeight = FontWeight.Bold)
+                            }
+                            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color.Gray.copy(0.2f))
+                            Text("Message Contact", color = Color(0xFF007AFF), textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth(), fontSize = 13.sp)
+                        }
+                    }
+                    else -> {
+                        Text(msg.text, fontSize = 16.sp, color = Color.Black)
+                    }
+                }
+                
+                Row(
+                    modifier = Modifier.align(Alignment.End).padding(top = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val timeStr = remember(msg.time) {
+                        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.time))
+                    }
+                    Text(
+                        timeStr,
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                    if (msg.mine) {
+                        Spacer(Modifier.width(4.dp))
+                        Icon(Icons.Outlined.DoneAll, null, modifier = Modifier.size(14.dp), tint = Color(0xFF53BDEB))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PremiumAttachmentHub(
+    onLocation: () -> Unit,
+    onDocument: () -> Unit,
+    onContact: () -> Unit,
+    onGallery: () -> Unit,
+    onCamera: () -> Unit,
+    onAudio: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = Color.White,
+        shadowElevation = 8.dp
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                AttachmentItem("Document", Icons.Outlined.Description, Color(0xFF7F66FF), onDocument)
+                AttachmentItem("Camera", Icons.Outlined.PhotoCamera, Color(0xFFFF4595), onCamera)
+                AttachmentItem("Gallery", Icons.Outlined.Collections, Color(0xFFBB66FF), onGallery)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                AttachmentItem("Audio", Icons.Outlined.Headphones, Color(0xFFFF9830), onAudio)
+                AttachmentItem("Location", Icons.Outlined.LocationOn, Color(0xFF06D755), onLocation)
+                AttachmentItem("Contact", Icons.Outlined.Person, Color(0xFF009DE2), onContact)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentItem(label: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onClick() }) {
+        Surface(
+            shape = CircleShape,
+            color = color,
+            modifier = Modifier.size(56.dp)
+        ) {
+            Icon(icon, null, tint = Color.White, modifier = Modifier.padding(14.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(label, fontSize = 12.sp, color = Color.Gray)
     }
 }
 

@@ -271,9 +271,15 @@ class MainActivity : FragmentActivity() {
         val db = FirebaseFirestore.getInstance()
         val normalizedPhone = phone.replace(Regex("[^0-9+]"), "")
         val normalizedEmail = email.trim().lowercase()
+        val parts = name.split(" ", limit = 2)
+        val fName = parts.getOrNull(0) ?: ""
+        val lName = parts.getOrNull(1) ?: ""
+
         val user = hashMapOf(
             "uid" to uid,
             "name" to name,
+            "firstName" to fName,
+            "lastName" to lName,
             "displayName" to name,
             "email" to email,
             "normalizedEmail" to normalizedEmail,
