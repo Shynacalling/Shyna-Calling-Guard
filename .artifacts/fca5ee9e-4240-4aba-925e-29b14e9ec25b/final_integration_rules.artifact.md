@@ -1,38 +1,26 @@
-# Shyna Master Integration Rules (Final)
+# Shyna Master Integration Rules (Consolidated FINAL)
 
-This document contains the consolidated rules and logic for the Shyna Caller Guard project to ensure seamless operation of DP uploads, calling, and data searching.
+This document is the **Single Source of Truth** for the Shyna Caller Guard project. It contains all critical logic, backend configurations, and safety patterns required to restore the app to its perfect working state.
 
-## 1. Firebase Backend Rules (The Foundation)
+## 1. Backend Migration: Cloudinary (Primary Media)
+Firebase Storage is **DISABLED**. All media (Profile DPs, Chat Photos, Chat Videos) now uses Cloudinary.
 
-### Storage Rules
-Copy these into **Firebase Console > Storage > Rules**:
-```javascript
-service firebase.storage {
-  match /b/{bucket}/o {
-    // Rule: Profile pictures in their own folder
-    match /profiles/{userId}/{allPaths=**} {
-      allow read: if true;
-      allow write: if request.auth != null && request.auth.uid == userId;
-    }
-    // Rule: Chat media can be accessed by authenticated users
-    match /chat_media/{chatId}/{allPaths=**} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}
-```
+### Cloudinary Configuration
+- **Cloud Name**: `shynacalling`
+- **Upload Preset**: `shyna_chat_unsigned` (Unsigned Mode)
+- **Initialization**: Handled in `ShynaApplication.kt` within a `try-catch` block.
 
-### Firestore Rules
+### Firestore Security Rules
 Copy these into **Firebase Console > Firestore > Rules**:
 ```javascript
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Rule: Users directory must be readable for the Search/Discovery feature
+    // Users: Publicly searchable for discovery, writable only by owner
     match /users/{userId} {
       allow read: if true;
       allow write: if request.auth != null && request.auth.uid == userId;
     }
-    // Rule: Connections and Chats
+    // Connections/Chats: Require authentication
     match /connections/{connId} {
       allow read, write: if request.auth != null;
     }
@@ -43,28 +31,49 @@ service cloud.firestore {
 }
 ```
 
-## 2. Core Logic Implementation Rules
+## 2. Stability & Crash Prevention Rules (Critical)
 
-### A. The "Safe Upload" Rule (Fixes "Object not found")
-Always read file data into memory immediately after selection to prevent URI permission loss.
-```kotlin
-// Rule: Use putBytes() instead of putFile() for media to be 100% reliable
-val bytes = context.contentResolver.openInputStream(uri)?.readBytes()
-fileRef.putBytes(bytes).continueWithTask { ... }.addOnSuccessListener { ... }
-```
+### A. Coil Image Loading (The "ImageVector" Rule)
+**CRITICAL**: Never pass `ImageVector` (e.g., `Icons.Default.Person`) into `AsyncImage` models or error/fallback painters.
+- **Correct Pattern**:
+  ```kotlin
+  if (!photoUrl.isNullOrBlank()) {
+      AsyncImage(model = photoUrl, ...)
+  } else {
+      Icon(imageVector = Icons.Default.Person, ...)
+  }
+  ```
 
-### B. The "Smart Search" Rule
-To make searching (Calling Data Search) work perfectly, always normalize inputs:
-- Convert emails to lowercase.
-- Strip non-numeric characters from phone numbers.
-- Filter `allRealUsers` in memory for small datasets (<1000 users) or use Firestore indexing for larger ones.
+### B. Firestore Data Safety (The "Strict Type" Rule)
+Legacy data may have inconsistent types. Always use safe getters.
+- **Correct Pattern**:
+  ```kotlin
+  val v = doc.get("field")
+  val safeVal = if (v is Number) v.toLong() else 0L
+  ```
 
-### C. The "Call Blocking" Rule
-Before allowing a call (Voice/Video):
-1. Check the `Connection` status between `userId` and `peerId`.
-2. If status is `BLOCKED` or `IGNORED`, disable calling buttons.
+### C. LazyColumn List Stability
+Every item in a list MUST have a unique, namespaced key to prevent `LazyLayout` identity crashes.
+- **Example**: `key = { "msg_${it.id}" }` or `key = { "chat_${it.id}" }`.
+- **Deduplication**: Always use `.distinctBy { it.id }` before passing data to a `LazyColumn`.
 
-## 3. Verified Synchronization
-All fixes for DP uploads, specialized sanitization of file paths, and real-time messaging updates have been synchronized in `SmartCommunicationScreen.kt`.
+## 3. High-End Feature Logic
 
-**Status: READY FOR DEPLOYMENT**
+### A. Modern Camera (WhatsApp Style)
+- **Implementation**: `ShynaCameraScreen.kt` using CameraX.
+- **Logic**: Tap for high-res photo, Long-press for video recording with timer.
+- **Auto-Send**: Media is automatically uploaded to Cloudinary and sent to the active chat on capture.
+
+### B. Live Location (Android 14 Ready)
+- **Service**: `LocationService.kt`
+- **Type**: `FOREGROUND_SERVICE_TYPE_LOCATION` (Mandatory).
+- **Safety**: Includes built-in permission checks and `try-catch` guards for foreground starts.
+
+## 4. Restore Checklist
+To restore the project from scratch:
+1. Ensure `google-services.json` is present in `/app`.
+2. Verify Cloudinary preset `shyna_chat_unsigned` exists in your Cloudinary Dashboard.
+3. Apply the Firestore Rules from Section 1.
+4. Run `clean assembleDebug`.
+
+**FINAL STATUS: COMPLETED & STABLE**

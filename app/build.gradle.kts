@@ -15,7 +15,7 @@ android {
         minSdk = 26          // Required for CallScreeningService + dual-SIM APIs
         targetSdk = 37
         versionCode = 79
-        versionName = "4.14.6"
+        versionName = "4.14.6-FINAL"
     }
 
     buildTypes {
