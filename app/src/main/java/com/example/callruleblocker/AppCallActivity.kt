@@ -291,8 +291,13 @@ fun IncomingCallUI(call: AppCall, onAccept: () -> Unit, onReject: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Surface(shape = CircleShape, modifier = Modifier.size(120.dp), color = Color.Gray) {
-                if (call.callerPhoto != null) {
-                    AsyncImage(model = call.callerPhoto, contentDescription = null, contentScale = ContentScale.Crop)
+                if (!call.callerPhoto.isNullOrBlank()) {
+                    AsyncImage(
+                        model = call.callerPhoto, 
+                        contentDescription = null, 
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 } else {
                     Icon(Icons.Default.Person, null, modifier = Modifier.padding(30.dp), tint = Color.White)
                 }

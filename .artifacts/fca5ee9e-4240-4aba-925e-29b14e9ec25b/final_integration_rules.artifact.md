@@ -9,8 +9,8 @@ Copy these into **Firebase Console > Storage > Rules**:
 ```javascript
 service firebase.storage {
   match /b/{bucket}/o {
-    // Rule: Profile pictures are public to read but private to write
-    match /profiles/{userId} {
+    // Rule: Profile pictures in their own folder
+    match /profiles/{userId}/{allPaths=**} {
       allow read: if true;
       allow write: if request.auth != null && request.auth.uid == userId;
     }

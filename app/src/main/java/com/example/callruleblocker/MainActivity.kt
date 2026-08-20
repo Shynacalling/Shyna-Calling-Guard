@@ -92,26 +92,38 @@ class MainActivity : FragmentActivity() {
             firebaseUser = user
             if (user != null) {
                 // ENSURE PROFILE SYNC ON AUTH STATE CHANGE
-                syncCurrentUserToFirestore()
+                try {
+                    syncCurrentUserToFirestore()
+                } catch (e: Exception) {
+                    Log.e("ShynaCall", "Profile sync failed on start", e)
+                }
                 
                 // SAVE FCM TOKEN FOR CALL NOTIFICATIONS
-                FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
-                    if (task.isSuccessful) {
-                        val token = task.result
-                        FirebaseFirestore.getInstance().collection("users").document(user.uid)
-                            .set(mapOf("fcmToken" to token), SetOptions.merge())
-                            .addOnSuccessListener { Log.d("ShynaCall", "FCM_TOKEN_SYNCED") }
+                try {
+                    FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            val token = task.result
+                            FirebaseFirestore.getInstance().collection("users").document(user.uid)
+                                .set(mapOf("fcmToken" to token), SetOptions.merge())
+                                .addOnSuccessListener { Log.d("ShynaCall", "FCM_TOKEN_SYNCED") }
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.e("ShynaCall", "FCM Token sync failed on start", e)
                 }
 
                 // APP-TO-APP CALL LISTENER
-                com.example.callruleblocker.call.CallSignalingManager.listenForIncomingCalls(user.uid) { call ->
-                    val intent = Intent(this, AppCallActivity::class.java).apply {
-                        putExtra("callId", call.id)
-                        putExtra("isIncoming", true)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                try {
+                    com.example.callruleblocker.call.CallSignalingManager.listenForIncomingCalls(user.uid) { call ->
+                        val intent = Intent(this, AppCallActivity::class.java).apply {
+                            putExtra("callId", call.id)
+                            putExtra("isIncoming", true)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(intent)
                     }
-                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e("ShynaCall", "Call listener failed on start", e)
                 }
             } else {
                 com.example.callruleblocker.call.CallSignalingManager.cleanup()
@@ -366,9 +378,11 @@ class MainActivity : FragmentActivity() {
             "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
         )
 
-        db.collection("users").document(user.uid).get().addOnSuccessListener { doc ->
-            if (doc.exists()) {
-                val currentPhoto = doc.getString("photoUrl")
+        db.collection("users").document(user.uid).get().addOnSuccessListener { docSnapshot ->
+            if (docSnapshot == null) return@addOnSuccessListener
+            
+            if (docSnapshot.exists()) {
+                val currentPhoto = docSnapshot.getString("photoUrl")
                 if (currentPhoto.isNullOrBlank() && user.photoUrl != null) {
                     syncData["photoUrl"] = user.photoUrl.toString()
                 }
@@ -379,6 +393,8 @@ class MainActivity : FragmentActivity() {
             db.collection("users").document(user.uid)
                 .set(syncData, com.google.firebase.firestore.SetOptions.merge())
                 .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid}") }
+        }.addOnFailureListener {
+            Log.e("ShynaDiscovery", "Firestore profile get failed", it)
         }
     }
 

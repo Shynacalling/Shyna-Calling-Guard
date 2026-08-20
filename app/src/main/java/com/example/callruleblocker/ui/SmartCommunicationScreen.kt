@@ -82,10 +82,10 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import com.example.callruleblocker.call.SimCallManager
-import com.example.callruleblocker.data.LiveKitConfig
 import com.example.callruleblocker.data.SessionManager
 import com.example.callruleblocker.data.AudioRecorder
-import com.google.firebase.storage.FirebaseStorage
+import com.example.callruleblocker.data.CloudinaryConfig
+import com.cloudinary.android.MediaManager
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
@@ -331,12 +331,15 @@ private fun SmartCommunicationContent(
     // Check if profile setup is required for the current user
     LaunchedEffect(firebaseUid) {
         if (firebaseUid != null) {
-            db.collection("users").document(firebaseUid!!).get().addOnSuccessListener { doc ->
-                if (!doc.exists() || doc.getString("customUid").isNullOrBlank()) {
+            db.collection("users").document(firebaseUid!!).get().addOnSuccessListener { userSnapshot ->
+                if (userSnapshot == null) return@addOnSuccessListener
+                if (!userSnapshot.exists() || userSnapshot.getString("customUid").isNullOrBlank()) {
                     isForceSetup = true
                 } else {
                     isForceSetup = false
                 }
+            }.addOnFailureListener {
+                Log.e("ShynaDiscovery", "Profile check failed", it)
             }
         }
     }
@@ -365,16 +368,24 @@ private fun SmartCommunicationContent(
                     "lastSeen" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
                     "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                 )
-                // Only add photoUrl if it's not empty in Auth
-                val authPhoto = user.photoUrl?.toString()
-                if (!authPhoto.isNullOrBlank()) {
-                    syncData["photoUrl"] = authPhoto
+                // SYNC PROFILE: Don't overwrite photoUrl if Firestore already has one and Auth doesn't
+                db.collection("users").document(user.uid).get().addOnSuccessListener { userSnapshot ->
+                    if (userSnapshot == null) return@addOnSuccessListener
+                    val existingPhoto = userSnapshot.getString("photoUrl")
+                    val authPhoto = user.photoUrl?.toString()
+                    
+                    if (!authPhoto.isNullOrBlank()) {
+                        syncData["photoUrl"] = authPhoto
+                    } else if (!existingPhoto.isNullOrBlank()) {
+                        // Keep the existing one if Auth has none
+                        syncData["photoUrl"] = existingPhoto
+                    }
+
+                    db.collection("users").document(user.uid)
+                        .set(syncData, SetOptions.merge())
+                        .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid}") }
+                        .addOnFailureListener { Log.e("ShynaDiscovery", "PROFILE_SYNC_FAILED", it) }
                 }
-                
-                db.collection("users").document(user.uid)
-                    .set(syncData, SetOptions.merge())
-                    .addOnSuccessListener { Log.d("ShynaDiscovery", "PROFILE_SYNC_SUCCESS uid=${user.uid} (Screen)") }
-                    .addOnFailureListener { Log.e("ShynaDiscovery", "PROFILE_SYNC_FAILED (Screen)", it) }
             }
         }
     }
@@ -397,28 +408,44 @@ private fun SmartCommunicationContent(
                         Log.e("ShynaDiscovery", "Firestore error: ${error.message}", error)
                         return@addSnapshotListener
                     }
-                    val users = snapshots?.documents?.mapNotNull { doc ->
-                        val email = doc.getString("email") ?: ""
-                        RealUser(
-                            uid = doc.id, 
-                            name = doc.getString("name") ?: doc.getString("displayName") ?: email.substringBefore("@"), 
-                            firstName = doc.getString("firstName") ?: "",
-                            lastName = doc.getString("lastName") ?: "",
-                            email = email, 
-                            phone = doc.getString("phone") ?: "", 
-                            normalizedPhone = doc.getString("normalizedPhone") ?: "", 
-                            normalizedEmail = doc.getString("normalizedEmail") ?: email.trim().lowercase(), 
-                            isOnline = doc.getBoolean("isOnline") ?: false, 
-                            customUid = doc.getString("customUid") ?: "", 
-                            photoUrl = doc.getString("photoUrl"),
-                            dob = doc.getLong("dob"),
-                            age = doc.getLong("age")?.toInt(),
-                            pincode = doc.getString("pincode") ?: "",
-                            district = doc.getString("district") ?: "",
-                            state = doc.getString("state") ?: "",
-                            country = doc.getString("country") ?: "India"
-                        )
-                    } ?: emptyList()
+                    val users = snapshots?.documents?.mapNotNull { userDoc ->
+                        try {
+                            val email = userDoc.getString("email") ?: ""
+                            
+                            // SAFE NUMERIC GETTERS: Prevent Crashes from Type Mismatch
+                            val dobVal = userDoc.get("dob")
+                            val safeDob = if (dobVal is Number) dobVal.toLong() else null
+                            
+                            val ageVal = userDoc.get("age")
+                            val safeAge = if (ageVal is Number) ageVal.toInt() else null
+
+                            val isOnlineVal = userDoc.get("isOnline")
+                            val safeIsOnline = if (isOnlineVal is Boolean) isOnlineVal else false
+
+                            RealUser(
+                                uid = userDoc.id, 
+                                name = userDoc.getString("name") ?: userDoc.getString("displayName") ?: email.substringBefore("@"), 
+                                firstName = userDoc.getString("firstName") ?: "",
+                                lastName = userDoc.getString("lastName") ?: "",
+                                email = email, 
+                                phone = userDoc.getString("phone") ?: "", 
+                                normalizedPhone = userDoc.getString("normalizedPhone") ?: "", 
+                                normalizedEmail = userDoc.getString("normalizedEmail") ?: email.trim().lowercase(), 
+                                isOnline = safeIsOnline, 
+                                customUid = userDoc.getString("customUid") ?: "", 
+                                photoUrl = userDoc.getString("photoUrl"),
+                                dob = safeDob,
+                                age = safeAge,
+                                pincode = userDoc.getString("pincode") ?: "",
+                                district = userDoc.getString("district") ?: "",
+                                state = userDoc.getString("state") ?: "",
+                                country = userDoc.getString("country") ?: "India"
+                            )
+                        } catch (e: Exception) {
+                            Log.e("ShynaDiscovery", "Skipping malformed user ${userDoc.id}", e)
+                            null
+                        }
+                    }?.distinctBy { it.uid } ?: emptyList() // DEDUPLICATE TO PREVENT LIST CRASHES
                     allRealUsers = users
                 }
         }
@@ -460,26 +487,44 @@ private fun SmartCommunicationContent(
             val listener = db.collection("connections")
                 .whereArrayContains("users", firebaseUid!!)
                 .addSnapshotListener { snapshots, _ ->
-                    val list = snapshots?.documents?.mapNotNull { doc ->
-                        val users = doc.get("users") as? List<String> ?: return@mapNotNull null
-                        Connection(
-                            id = doc.id,
-                            user1 = users.getOrNull(0) ?: "",
-                            user2 = users.getOrNull(1) ?: "",
-                            status = try { ConnectionStatus.valueOf(doc.getString("status") ?: "NONE") } catch (e: Exception) { ConnectionStatus.NONE },
-                            initiator = doc.getString("initiator") ?: "",
-                            blockedBy = doc.getString("blockedBy"),
-                            firstMessage = doc.getString("firstMessage"),
-                            attemptCount = doc.getLong("attemptCount")?.toInt() ?: 0,
-                            temporaryBlockedUntil = doc.getLong("temporaryBlockedUntil") ?: 0L,
-                            lastResendAt = doc.getLong("lastResendAt") ?: 0L,
-                            resendCount = doc.getLong("resendCount")?.toInt() ?: 0,
-                            createdAt = doc.getLong("createdAt") ?: 0L,
-                            acceptedAt = doc.getLong("acceptedAt") ?: 0L,
-                            ignoredAt = doc.getLong("ignoredAt") ?: 0L,
-                            blockedAt = doc.getLong("blockedAt") ?: 0L
-                        )
-                    } ?: emptyList()
+                    val list = snapshots?.documents?.mapNotNull { connDoc ->
+                        try {
+                            val users = connDoc.get("users") as? List<String> ?: return@mapNotNull null
+                            
+                            val attemptCountVal = connDoc.get("attemptCount")
+                            val safeAttemptCount = if (attemptCountVal is Number) attemptCountVal.toInt() else 0
+                            
+                            val resendCountVal = connDoc.get("resendCount")
+                            val safeResendCount = if (resendCountVal is Number) resendCountVal.toInt() else 0
+
+                            // SAFE TIMESTAMP/LONG GETTERS
+                            val getLongField = { field: String ->
+                                val v = connDoc.get(field)
+                                if (v is Number) v.toLong() else 0L
+                            }
+
+                            Connection(
+                                id = connDoc.id,
+                                user1 = users.getOrNull(0) ?: "",
+                                user2 = users.getOrNull(1) ?: "",
+                                status = try { ConnectionStatus.valueOf(connDoc.getString("status") ?: "NONE") } catch (e: Exception) { ConnectionStatus.NONE },
+                                initiator = connDoc.getString("initiator") ?: "",
+                                blockedBy = connDoc.getString("blockedBy"),
+                                firstMessage = connDoc.getString("firstMessage"),
+                                attemptCount = safeAttemptCount,
+                                temporaryBlockedUntil = getLongField("temporaryBlockedUntil"),
+                                lastResendAt = getLongField("lastResendAt"),
+                                resendCount = safeResendCount,
+                                createdAt = getLongField("createdAt"),
+                                acceptedAt = getLongField("acceptedAt"),
+                                ignoredAt = getLongField("ignoredAt"),
+                                blockedAt = getLongField("blockedAt")
+                            )
+                        } catch (e: Exception) {
+                            Log.e("ShynaDiscovery", "Skipping malformed connection ${connDoc.id}", e)
+                            null
+                        }
+                    }?.distinctBy { it.id } ?: emptyList()
                     connections.clear()
                     connections.addAll(list)
                 }
@@ -504,8 +549,12 @@ private fun SmartCommunicationContent(
                 .whereEqualTo("receiverId", currentUid)
                 .whereEqualTo("status", MessageStatus.SENT.name)
                 .addSnapshotListener { snapshots, _ ->
-                    snapshots?.documents?.forEach { doc ->
-                        doc.reference.update("status", MessageStatus.DELIVERED.name, "deliveredAt", com.google.firebase.Timestamp.now())
+                    snapshots?.documents?.forEach { msgDoc ->
+                        try {
+                            msgDoc.reference.update("status", MessageStatus.DELIVERED.name, "deliveredAt", com.google.firebase.Timestamp.now())
+                        } catch (e: Exception) {
+                            Log.e("ShynaDiscovery", "Auto-delivered update failed", e)
+                        }
                     }
                 }
         }
@@ -520,23 +569,33 @@ private fun SmartCommunicationContent(
         if (currentUid != null) {
             chatsListener = db.collection("chats").addSnapshotListener { snapshots, _ ->
                 val docs = snapshots?.documents ?: emptyList()
-                val chats = docs.mapNotNull { doc ->
-                    val u1 = doc.getString("user1") ?: ""
-                    val u2 = doc.getString("user2") ?: ""
-                    if (u1 != currentUid && u2 != currentUid) return@mapNotNull null
-                    
-                    val peer = if (u1 == currentUid) u2 else u1
-                    val unreadCount = doc.getLong("unreadCount_$currentUid")?.toInt() ?: 0
-                    LocalChatMessage(
-                        id = doc.id,
-                        text = doc.getString("lastMessage") ?: "",
-                        mine = false,
-                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
-                        peerName = peer,
-                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
-                        metadata = unreadCount.toString()
-                    )
-                }.sortedByDescending { it.time }
+                val chats = docs.mapNotNull { chatDoc ->
+                    try {
+                        val u1 = chatDoc.getString("user1") ?: ""
+                        val u2 = chatDoc.getString("user2") ?: ""
+                        if (u1 != currentUid && u2 != currentUid) return@mapNotNull null
+                        
+                        val peer = if (u1 == currentUid) u2 else u1
+                        
+                        val unreadCountVal = chatDoc.get("unreadCount_$currentUid")
+                        val safeUnreadCount = if (unreadCountVal is Number) unreadCountVal.toInt() else 0
+
+                        val timeVal = chatDoc.getTimestamp("timestamp")?.toDate()?.time ?: 0L
+
+                        LocalChatMessage(
+                            id = chatDoc.id,
+                            text = chatDoc.getString("lastMessage") ?: "",
+                            mine = false,
+                            time = timeVal,
+                            peerName = peer,
+                            type = try { MessageType.valueOf(chatDoc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
+                            metadata = safeUnreadCount.toString()
+                        )
+                    } catch (e: Exception) {
+                        Log.e("ShynaDiscovery", "Skipping malformed chat ${chatDoc.id}", e)
+                        null
+                    }
+                }.distinctBy { it.id }.sortedByDescending { it.time }
                 
                 allMessages.clear()
                 allMessages.addAll(chats)
@@ -560,7 +619,10 @@ private fun SmartCommunicationContent(
                     Text("No blocked users.", color = ShynaDesign.colors.TextSecondary)
                 } else {
                     LazyColumn {
-                        items(blockedConnections) { conn ->
+                        items(
+                            items = blockedConnections,
+                            key = { "blocked_${it.id}" }
+                        ) { conn ->
                             val otherId = if (conn.user1 == currentUserId) conn.user2 else conn.user1
                             val user = allRealUsers.find { it.uid == otherId }
                             ListItem(
@@ -816,7 +878,10 @@ private fun SmartCommunicationContent(
                     Text("No Shyna users found.", color = ShynaDesign.colors.TextSecondary)
                 } else {
                     LazyColumn {
-                        items(allRealUsers) { user ->
+                        items(
+                            items = allRealUsers,
+                            key = { "contact_${it.uid}" }
+                        ) { user ->
                             ShynaContactRow(
                                 name = user.name,
                                 subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
@@ -915,7 +980,12 @@ private fun RequestCard(
                     modifier = Modifier.size(54.dp), 
                     color = ShynaDesign.colors.HeaderBg
                 ) {
-                    if (photoUrl != null) AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                    if (!photoUrl.isNullOrBlank()) AsyncImage(
+                                model = photoUrl, 
+                                contentDescription = null, 
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
                     else Icon(Icons.Outlined.Person, null, modifier = Modifier.padding(12.dp), tint = ShynaDesign.colors.TextSecondary)
                 }
                 Spacer(Modifier.width(16.dp))
@@ -1095,7 +1165,10 @@ private fun ChatsPage(
                             horizontalArrangement = Arrangement.spacedBy(16.dp),
                             modifier = Modifier.padding(top = 8.dp)
                         ) {
-                            items(onlineUsers) { user ->
+                            items(
+                                items = onlineUsers,
+                                key = { "online_${it.uid}" }
+                            ) { user ->
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onOpenChat(user.uid) }) {
                                     Box {
                                         Surface(
@@ -1104,7 +1177,12 @@ private fun ChatsPage(
                                             color = ShynaDesign.colors.SurfaceBg,
                                             border = BorderStroke(2.5.dp, Brush.sweepGradient(listOf(ShynaDesign.colors.BrandGreen, ShynaDesign.colors.AccentBlue, ShynaDesign.colors.BrandGreen)))
                                         ) {
-                                            if (user.photoUrl != null) AsyncImage(model = user.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                                            if (!user.photoUrl.isNullOrBlank()) AsyncImage(
+                                                model = user.photoUrl, 
+                                                contentDescription = null, 
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
                                             else Icon(Icons.Outlined.Person, null, modifier = Modifier.padding(14.dp), tint = ShynaDesign.colors.TextSecondary)
                                         }
                                         Box(modifier = Modifier.size(14.dp).align(Alignment.BottomEnd).offset(x = (-2).dp, y = (-2).dp).background(Color.White, CircleShape).padding(2.dp)) {
@@ -1128,7 +1206,10 @@ private fun ChatsPage(
                 
                 if (myRequests.isNotEmpty()) {
                     item { ListHeader("New Communication Requests (${myRequests.size})") }
-                    items(myRequests) { conn ->
+                    items(
+                        items = myRequests,
+                        key = { "request_${it.id}" }
+                    ) { conn ->
                         val otherId = if (conn.user1 == currentUid) conn.user2 else conn.user1
                         val sender = allRealUsers.find { it.uid == otherId }
                         val db = remember { FirebaseFirestore.getInstance() }
@@ -1166,7 +1247,11 @@ private fun ChatsPage(
                     item { Spacer(Modifier.height(8.dp)) }
                 }
 
-                items(displayList) { item ->
+                items(
+                    items = displayList,
+                    key = { "chat_${it.id}" },
+                    contentType = { "chat_row" }
+                ) { item ->
                     ShynaContactRow(
                         name = item.name, 
                         subtitle = item.subtitle,
@@ -1187,7 +1272,10 @@ private fun ChatsPage(
 
                     if (filteredSuggestions.isNotEmpty()) {
                         item { ListHeader("Suggested for you") }
-                        items(filteredSuggestions) { user ->
+                        items(
+                            items = filteredSuggestions,
+                            key = { "suggested_${it.uid}" }
+                        ) { user ->
                             ShynaContactRow(
                                 name = user.name + (if(user.uid == currentUid) " (You)" else ""),
                                 subtitle = if (user.customUid.isNotEmpty()) "@${user.customUid}" else user.email,
@@ -1213,7 +1301,11 @@ private fun ChatsPage(
             } else {
                 if (displayList.isNotEmpty()) {
                     item { ListHeader("Search Results (${displayList.size})") }
-                    items(displayList) { item ->
+                    items(
+                        items = displayList,
+                        key = { "search_${it.id}" },
+                        contentType = { "chat_row" }
+                    ) { item ->
                         ShynaContactRow(
                             name = item.name, 
                             subtitle = item.subtitle,
@@ -1281,8 +1373,13 @@ private fun ShynaContactRow(
                 ) {
                     Box(modifier = Modifier.padding(3.dp)) {
                         Surface(shape = CircleShape, modifier = Modifier.fillMaxSize()) {
-                            if (photoUrl != null) {
-                                AsyncImage(model = photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
+                            if (!photoUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = photoUrl, 
+                                    contentDescription = null, 
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             } else {
                                 Box(contentAlignment = Alignment.Center, modifier = Modifier.background(ShynaDesign.colors.HeaderBg)) { 
                                     Icon(Icons.Outlined.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(30.dp)) 
@@ -2150,7 +2247,6 @@ private fun AuthTextField(
 private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
     val context = LocalContext.current
     val db = remember { FirebaseFirestore.getInstance() }
-    val storage = remember { FirebaseStorage.getInstance() }
     val appVersion = remember { 
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrDefault("1.0.0")
     }
@@ -2295,7 +2391,7 @@ private fun YouPage(currentUser: RealUser, onLogout: () -> Unit) {
                     .shadow(12.dp, CircleShape),
                 border = BorderStroke(4.dp, ShynaDesign.colors.HeaderBg)
             ) {
-                if (currentUser.photoUrl != null) {
+                if (!currentUser.photoUrl.isNullOrBlank()) {
                     AsyncImage(
                         model = currentUser.photoUrl,
                         contentDescription = "Profile Picture",
@@ -2586,40 +2682,44 @@ private fun ProfileImageEditorDialog(
                                         transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
                                         out.close()
                                         
-                                        // 3. Upload to Storage
-                                        val storage = FirebaseStorage.getInstance()
+                                        // 3. Upload to Cloudinary
                                         val currentUid = auth.currentUser?.uid ?: throw Exception("Not logged in")
-                                        val ref = storage.reference.child("profiles").child("${currentUid}.jpg")
                                         
-                                        // RELIABLE UPLOAD: Convert to byte array first
-                                        val baos = java.io.ByteArrayOutputStream()
-                                        transformed.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, baos)
-                                        val data = baos.toByteArray()
-                                        
-                                        // Use Task API for better reliability
-                                        val uploadTask = ref.putBytes(data)
-                                        uploadTask.continueWithTask { task ->
-                                            if (!task.isSuccessful) task.exception?.let { throw it }
-                                            ref.downloadUrl
-                                        }.await().let { downloadUri ->
-                                            val downloadUrl = downloadUri.toString()
-                                            
-                                            // 4. Update Firestore & Firebase Auth Profile
-                                            val finalUrl = if (downloadUrl.contains("?")) "$downloadUrl&t=${System.currentTimeMillis()}" else "$downloadUrl?t=${System.currentTimeMillis()}"
-                                            
-                                            FirebaseFirestore.getInstance().collection("users").document(currentUid)
-                                                .set(mapOf("photoUrl" to finalUrl), SetOptions.merge()).await()
-                                            
-                                            val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
-                                                .setPhotoUri(Uri.parse(finalUrl))
-                                                .build()
-                                            auth.currentUser?.updateProfile(profileUpdates)?.await()
+                                        withContext(Dispatchers.Main) {
+                                            MediaManager.get().upload(file.absolutePath)
+                                                .unsigned(CloudinaryConfig.UPLOAD_PRESET)
+                                                .option("public_id", "profile_$currentUid")
+                                                .option("folder", "profiles")
+                                                .callback(object : com.cloudinary.android.callback.UploadCallback {
+                                                    override fun onStart(requestId: String) {}
+                                                    override fun onProgress(requestId: String, bytes: Long, totalBytes: Long) {}
+                                                    override fun onSuccess(requestId: String, resultData: Map<*, *>) {
+                                                        val downloadUrl = resultData["secure_url"] as String
+                                                        // Update Firestore and Auth
+                                                        scope.launch {
+                                                            try {
+                                                                FirebaseFirestore.getInstance().collection("users").document(currentUid)
+                                                                    .set(mapOf("photoUrl" to downloadUrl, "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge()).await()
+                                                                
+                                                                val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                                                                    .setPhotoUri(Uri.parse(downloadUrl))
+                                                                    .build()
+                                                                auth.currentUser?.updateProfile(profileUpdates)?.await()
 
-                                            withContext(Dispatchers.Main) {
-                                                onConfirm(transformed)
-                                                onDismiss()
-                                                Toast.makeText(context, "Profile photo updated!", Toast.LENGTH_SHORT).show()
-                                            }
+                                                                onConfirm(transformed)
+                                                                onDismiss()
+                                                                Toast.makeText(context, "Profile photo updated!", Toast.LENGTH_SHORT).show()
+                                                            } catch (e: Exception) {
+                                                                Log.e("ShynaCall", "Profile sync failed", e)
+                                                            }
+                                                        }
+                                                    }
+                                                    override fun onError(requestId: String, error: com.cloudinary.android.callback.ErrorInfo) {
+                                                        Toast.makeText(context, "Upload failed: ${error.description}", Toast.LENGTH_LONG).show()
+                                                    }
+                                                    override fun onReschedule(requestId: String, error: com.cloudinary.android.callback.ErrorInfo) {}
+                                                })
+                                                .dispatch()
                                         }
                                     } catch (e: Exception) {
                                         Log.e("ShynaCall", "Profile update failed: ${e.message}", e)
@@ -2686,6 +2786,7 @@ private fun SmartChatDetailScreen(
     var showContactPicker by remember { mutableStateOf(false) }
     var messageMenuTarget by remember { mutableStateOf<LocalChatMessage?>(null) }
     var showDeleteDialogTarget by remember { mutableStateOf<LocalChatMessage?>(null) }
+    var showCamera by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var isUploadingMedia by remember { mutableStateOf(false) }
     var currentRecordingFile by remember { mutableStateOf<File?>(null) }
@@ -2693,7 +2794,8 @@ private fun SmartChatDetailScreen(
     var reactionTargetMsgId by remember { mutableStateOf<String?>(null) }
 
     BackHandler { 
-        if (reactionTargetMsgId != null) reactionTargetMsgId = null
+        if (showCamera) showCamera = false
+        else if (reactionTargetMsgId != null) reactionTargetMsgId = null
         else if (isEmojiPickerOpen) isEmojiPickerOpen = false
         else if (isSelectionMode) selectedMessageIds = emptySet()
         else if (isSearchMode) isSearchMode = false
@@ -2714,28 +2816,53 @@ private fun SmartChatDetailScreen(
             .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .addSnapshotListener { snapshots, error ->
                 if (error != null) return@addSnapshotListener
-                val newMessages = snapshots?.documents?.mapNotNull { doc ->
-                    val sId = doc.getString("senderId") ?: ""
-                    val deletedFor = doc.get("deletedFor") as? List<String> ?: emptyList()
-                    if (deletedFor.contains(userId)) return@mapNotNull null
-                    LocalChatMessage(
-                        id = doc.id,
-                        chatId = chatId,
-                        text = doc.getString("text") ?: "",
-                        mine = sId == userId,
-                        time = doc.getTimestamp("timestamp")?.toDate()?.time ?: 0L,
-                        peerName = if (sId == userId) peerId else userId,
-                        type = try { MessageType.valueOf(doc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
-                        metadata = doc.getString("metadata"),
-                        status = try { MessageStatus.valueOf(doc.getString("status") ?: "SENT") } catch (e: Exception) { MessageStatus.SENT },
-                        senderId = sId,
-                        receiverId = doc.getString("receiverId") ?: "",
-                        isRead = doc.getBoolean("isRead") ?: false,
-                        isDeletedForEveryone = doc.getBoolean("isDeletedForEveryone") ?: false,
-                        deletedFor = deletedFor,
-                        reactions = (doc.get("reactions") as? Map<String, String>) ?: emptyMap()
-                    )
-                } ?: emptyList()
+                val newMessages = snapshots?.documents?.mapNotNull { msgDoc ->
+                    try {
+                        val sId = msgDoc.getString("senderId") ?: ""
+                        val deletedFor = msgDoc.get("deletedFor") as? List<String> ?: emptyList()
+                        if (deletedFor.contains(userId)) return@mapNotNull null
+                        
+                        // SAFE DATA MAPPING: Handle missing fields from legacy/malformed data
+                        val msgId = msgDoc.id
+                        if (msgId.isBlank()) return@mapNotNull null
+                        
+                        // SAFE TIME PARSING: Try Timestamp first, then Long, then default 0
+                        val timeVal = msgDoc.get("timestamp")
+                        val safeTime = when (timeVal) {
+                            is com.google.firebase.Timestamp -> timeVal.toDate().time
+                            is Number -> timeVal.toLong()
+                            else -> 0L
+                        }
+                        
+                        val isReadVal = msgDoc.get("isRead")
+                        val safeIsRead = if (isReadVal is Boolean) isReadVal else false
+                        
+                        val isDeletedForEveryoneVal = msgDoc.get("isDeletedForEveryone")
+                        val safeIsDeletedForEveryone = if (isDeletedForEveryoneVal is Boolean) isDeletedForEveryoneVal else false
+
+                        LocalChatMessage(
+                            id = msgId,
+                            chatId = chatId,
+                            text = msgDoc.getString("text") ?: "",
+                            mine = sId == userId,
+                            time = safeTime,
+                            peerName = if (sId == userId) peerId else userId,
+                            type = try { MessageType.valueOf(msgDoc.getString("type") ?: "TEXT") } catch (e: Exception) { MessageType.TEXT },
+                            metadata = msgDoc.getString("metadata"),
+                            status = try { MessageStatus.valueOf(msgDoc.getString("status") ?: "SENT") } catch (e: Exception) { MessageStatus.SENT },
+                            senderId = sId,
+                            receiverId = msgDoc.getString("receiverId") ?: "",
+                            isRead = safeIsRead,
+                            isDeletedForEveryone = safeIsDeletedForEveryone,
+                            deletedFor = deletedFor,
+                            reactions = (msgDoc.get("reactions") as? Map<String, String>) ?: emptyMap()
+                        )
+                    } catch (e: Exception) {
+                        Log.e("ShynaDiscovery", "Skipping malformed message ${msgDoc.id}", e)
+                        null
+                    }
+                }?.distinctBy { it.id } ?: emptyList() // DEDUPLICATE BY ID TO PREVENT LAZYCOLUMN CRASH
+                
                 chatMessages.clear()
                 chatMessages.addAll(newMessages)
             }
@@ -2797,58 +2924,26 @@ private fun SmartChatDetailScreen(
 
     val uploadAndSend = { uri: Uri, type: MessageType, label: String ->
         isUploadingMedia = true
-        val storage = FirebaseStorage.getInstance()
-        val storageRef = storage.reference
-        
-        // Sanitize file name to avoid path issues
-        val rawFileName = uri.lastPathSegment ?: "file_${System.currentTimeMillis()}"
-        val sanitizedFileName = rawFileName.replace(Regex("[^a-zA-Z0-9.]"), "_")
-        val fileName = "${System.currentTimeMillis()}_$sanitizedFileName"
-        
-        val fileRef = storageRef.child("chat_media").child(chatId).child(fileName)
-        
-        scope.launch(Dispatchers.IO) {
-            try {
-                // IMMEDIATE READ: Read URI into ByteArray on IO thread to avoid permission loss
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val bytes = inputStream?.readBytes() ?: throw Exception("Could not read file data")
-                inputStream.close()
-
-                var finalBytes = bytes
-                if (type == MessageType.IMAGE) {
-                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bitmap != null) {
-                        val baos = java.io.ByteArrayOutputStream()
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, baos)
-                        finalBytes = baos.toByteArray()
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    fileRef.putBytes(finalBytes)
-                        .continueWithTask { task ->
-                            if (!task.isSuccessful) task.exception?.let { throw it }
-                            fileRef.downloadUrl
-                        }
-                        .addOnSuccessListener { downloadUri ->
-                            sendMessage(label, type, downloadUri.toString())
-                            isUploadingMedia = false
-                        }
-                        .addOnFailureListener { e ->
-                            isUploadingMedia = false
-                            val errorMsg = e.localizedMessage ?: "Unknown Error"
-                            Log.e("ShynaCall", "Upload failed: $errorMsg", e)
-                            Toast.makeText(context, "Upload failed: $errorMsg", Toast.LENGTH_LONG).show()
-                        }
-                }
-            } catch (e: Exception) {
-                Log.e("ShynaCall", "Media processing failed", e)
-                withContext(Dispatchers.Main) {
+        MediaManager.get().upload(uri)
+            .unsigned(CloudinaryConfig.UPLOAD_PRESET)
+            .option("folder", "chat_media/$chatId")
+            .callback(object : com.cloudinary.android.callback.UploadCallback {
+                override fun onStart(requestId: String) {}
+                override fun onProgress(requestId: String, bytes: Long, totalBytes: Long) {}
+                override fun onSuccess(requestId: String, resultData: Map<*, *>) {
+                    val downloadUrl = resultData["secure_url"] as String
+                    sendMessage(label, type, downloadUrl)
                     isUploadingMedia = false
-                    Toast.makeText(context, "Media error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
-            }
-        }
+                override fun onError(requestId: String, error: com.cloudinary.android.callback.ErrorInfo) {
+                    Toast.makeText(context, "Upload failed: ${error.description}", Toast.LENGTH_LONG).show()
+                    isUploadingMedia = false
+                }
+                override fun onReschedule(requestId: String, error: com.cloudinary.android.callback.ErrorInfo) {
+                    isUploadingMedia = false
+                }
+            })
+            .dispatch()
     }
 
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -2858,14 +2953,16 @@ private fun SmartChatDetailScreen(
             uploadAndSend(it, type, if (type == MessageType.VIDEO) "Video" else "Shared Image")
         }
     }
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { 
-        it?.let { 
-            val file = File(context.cacheDir, "cam_${System.currentTimeMillis()}.jpg")
-            val out = java.io.FileOutputStream(file)
-            it.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
-            out.close()
-            uploadAndSend(Uri.fromFile(file), MessageType.IMAGE, "Photo")
-        } 
+
+    if (showCamera) {
+        ShynaCameraScreen(
+            onBack = { showCamera = false },
+            onMediaCaptured = { uri, isVideo ->
+                showCamera = false
+                val type = if (isVideo) MessageType.VIDEO else MessageType.IMAGE
+                uploadAndSend(uri, type, if (isVideo) "Video" else "Photo")
+            }
+        )
     }
     val contactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
         uri?.let {
@@ -2898,18 +2995,28 @@ private fun SmartChatDetailScreen(
                         selectedCount = selectedMessageIds.size,
                         onClose = { selectedMessageIds = emptySet() },
                         onReply = { 
-                            replyMessage = chatMessages.find { it.id == selectedMessageIds.first() }
+                            selectedMessageIds.firstOrNull()?.let { firstId ->
+                                replyMessage = chatMessages.find { it.id == firstId }
+                            }
                             selectedMessageIds = emptySet()
                         },
                         onStar = { },
-                        onDelete = { showDeleteDialogTarget = chatMessages.find { it.id == selectedMessageIds.first() } },
+                        onDelete = { 
+                            selectedMessageIds.firstOrNull()?.let { firstId ->
+                                showDeleteDialogTarget = chatMessages.find { it.id == firstId } 
+                            }
+                        },
                         onForward = { },
                         onInfo = {
-                            onMessageInfo(chatMessages.find { it.id == selectedMessageIds.first() }!!)
+                            selectedMessageIds.firstOrNull()?.let { firstId ->
+                                chatMessages.find { it.id == firstId }?.let { msg ->
+                                    onMessageInfo(msg)
+                                }
+                            }
                             selectedMessageIds = emptySet()
                         },
                         canReply = selectedMessageIds.size == 1,
-                        canInfo = selectedMessageIds.size == 1 && chatMessages.find { it.id == selectedMessageIds.first() }?.mine == true
+                        canInfo = selectedMessageIds.size == 1 && chatMessages.find { it.id == (selectedMessageIds.firstOrNull() ?: "") }?.mine == true
                     )
                 } else if (isSearchMode) {
                     ChatSearchHeader(
@@ -2988,14 +3095,13 @@ private fun SmartChatDetailScreen(
                     ModalBottomSheet(onDismissRequest = { showAttachmentMenu = false }, sheetState = sheetState) {
                         PremiumAttachmentHub(
                             onLocation = { 
-                                val intent = Intent(context, com.example.callruleblocker.data.LocationService::class.java)
-                                context.startForegroundService(intent)
-                                sendMessage("📍 Live Location Shared", MessageType.LIVE_LOCATION, "active")
+                                onLocationClick(peerId)
                                 showAttachmentMenu = false 
                             },
                             onDocument = { docLauncher.launch("*/*"); showAttachmentMenu = false },
                             onContact = { contactLauncher.launch(null); showAttachmentMenu = false },
                             onGallery = { galleryLauncher.launch("image/* video/*"); showAttachmentMenu = false },
+                            onCamera = { showCamera = true; showAttachmentMenu = false },
                             onPoll = { 
                                 // Integrated Poll Logic
                                 sendMessage("📊 New Poll", MessageType.POLL, "Poll Question?")
@@ -3012,7 +3118,7 @@ private fun SmartChatDetailScreen(
                 }
                 ChatComposer(
                     text = text, onTextChange = { text = it }, isRecording = isRecording, recordingDuration = recordingDuration,
-                    onAttachClick = { showAttachmentMenu = !showAttachmentMenu }, onCameraClick = { cameraLauncher.launch(null) },
+                    onAttachClick = { showAttachmentMenu = !showAttachmentMenu }, onCameraClick = { showCamera = true },
                     onSendClick = { if (text.isNotBlank()) { sendMessage(text, MessageType.TEXT, null); replyMessage = null } },
                     onMicClick = {
                         if (isRecording) {
@@ -3035,17 +3141,41 @@ private fun SmartChatDetailScreen(
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), reverseLayout = true) {
+            // STABLE GROUPING: Group messages by date and remember it to avoid identity instability during scroll
+            val groupedMessages = remember(chatMessages.size, chatMessages.map { it.id }) {
+                chatMessages.groupBy { 
+                    SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it.time)) 
+                }
+            }
+
+            LazyColumn(
+                state = listState, 
+                modifier = Modifier.fillMaxSize(), 
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), 
+                verticalArrangement = Arrangement.spacedBy(4.dp), 
+                reverseLayout = true
+            ) {
                 val today = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date())
                 val yesterday = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(System.currentTimeMillis() - 86400000))
-                val grouped = chatMessages.groupBy { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it.time)) }
-                grouped.forEach { (date, messages) ->
-                    items(messages, key = { it.id }) { msg ->
+                
+                groupedMessages.forEach { (date, messages) ->
+                    // KEY NAMESPACE: Use "msg_" prefix to ensure global uniqueness within the LazyColumn
+                    items(
+                        items = messages, 
+                        key = { "msg_${it.id}" },
+                        contentType = { "chat_bubble" }
+                    ) { msg ->
                         ShynaMessageBubble(
                             msg = msg, 
                             isSelected = selectedMessageIds.contains(msg.id),
                             isSelectionMode = isSelectionMode,
-                            onLocationClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))) },
+                            onLocationClick = { 
+                                try {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("geo:$it?q=$it"))) 
+                                } catch (e: Exception) {
+                                    android.widget.Toast.makeText(context, "No map application found", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            },
                             onMediaClick = { onOpenMedia(it) },
                             onLongClick = { reactionTargetMsgId = msg.id },
                             onClick = { 
@@ -3056,7 +3186,10 @@ private fun SmartChatDetailScreen(
                             onReaction = { toggleReaction(msg.id, it) }
                         )
                     }
-                    item { DateDivider(date = if (date == today) "Today" else if (date == yesterday) "Yesterday" else date) }
+                    // STABLE DIVIDER KEY: Prevent dividers from shifting identity and causing pinnable item crashes
+                    item(key = "date_$date", contentType = { "date_divider" }) { 
+                        DateDivider(date = if (date == today) "Today" else if (date == yesterday) "Yesterday" else date) 
+                    }
                 }
             }
             
@@ -3114,7 +3247,10 @@ private fun SmartChatDetailScreen(
             title = { Text("Share Contact") },
             text = {
                 LazyColumn {
-                    items(allRealUsers) { u ->
+                    items(
+                        items = allRealUsers,
+                        key = { "share_contact_${it.uid}" }
+                    ) { u ->
                         ListItem(headlineContent = { Text(u.name) }, modifier = Modifier.clickable { sendMessage(u.name, MessageType.CONTACT, u.uid); showContactPicker = false })
                     }
                 }
@@ -3224,9 +3360,13 @@ private fun ShynaMessageBubble(
                                             .height(160.dp)
                                             .clip(RoundedCornerShape(12.dp))
                                             .clickable {
-                                                msg.metadata?.let { coords ->
-                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$coords?q=$coords"))
-                                                    context.startActivity(intent)
+                                                try {
+                                                    msg.metadata?.let { coords ->
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$coords?q=$coords"))
+                                                        context.startActivity(intent)
+                                                    }
+                                                } catch (e: Exception) {
+                                                    android.widget.Toast.makeText(context, "No map application found", android.widget.Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                     ) {
@@ -3496,6 +3636,7 @@ private fun PremiumAttachmentHub(
     onDocument: () -> Unit,
     onContact: () -> Unit,
     onGallery: () -> Unit,
+    onCamera: () -> Unit,
     onPoll: () -> Unit,
     onEvent: () -> Unit,
     onAudio: () -> Unit = {}
@@ -3513,7 +3654,7 @@ private fun PremiumAttachmentHub(
             
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 AttachmentItem("Gallery", Icons.Outlined.Collections, Color(0xFFE91E63), onGallery)
-                AttachmentItem("Camera", Icons.Outlined.PhotoCamera, Color(0xFF9C27B0), onGallery) 
+                AttachmentItem("Camera", Icons.Outlined.PhotoCamera, Color(0xFF9C27B0), onCamera) 
                 AttachmentItem("Location", Icons.Outlined.LocationOn, Color(0xFF4CAF50), onLocation)
                 AttachmentItem("Contact", Icons.Outlined.Person, Color(0xFF2196F3), onContact)
             }
@@ -3731,7 +3872,7 @@ private fun ChatHeader(
                         modifier = Modifier.size(44.dp),
                         color = ShynaDesign.colors.TextSecondary.copy(0.1f)
                     ) {
-                        if (peer?.photoUrl != null) {
+                        if (!peer?.photoUrl.isNullOrBlank()) {
                             AsyncImage(model = peer.photoUrl, contentDescription = null, contentScale = ContentScale.Crop)
                         } else {
                             Icon(Icons.Outlined.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.padding(10.dp))

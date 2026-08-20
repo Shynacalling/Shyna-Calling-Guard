@@ -4,7 +4,11 @@ import android.app.*
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import android.Manifest
+import android.content.pm.PackageManager
 import com.example.callruleblocker.MainActivity
 import com.google.android.gms.location.*
 import com.google.firebase.firestore.FirebaseFirestore
@@ -50,7 +54,11 @@ class LocationService : Service() {
                 PendingIntent.getService(this, 0, Intent(this, LocationService::class.java).apply { action = "STOP_LIVE_LOCATION" }, PendingIntent.FLAG_IMMUTABLE))
             .build()
         
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(1, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(1, notification)
+        }
         startLocationUpdates()
         
         return START_STICKY
@@ -59,8 +67,14 @@ class LocationService : Service() {
     private fun startLocationUpdates() {
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000L).build()
         try {
-            fusedLocationClient.requestLocationUpdates(request, locationCallback, null)
-        } catch (e: SecurityException) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                fusedLocationClient.requestLocationUpdates(request, locationCallback, android.os.Looper.getMainLooper())
+            } else {
+                Log.e("ShynaDiscovery", "Location permission not granted for service")
+                stopSelf()
+            }
+        } catch (e: Exception) {
+            Log.e("ShynaDiscovery", "Failed to request location updates", e)
             stopSelf()
         }
     }

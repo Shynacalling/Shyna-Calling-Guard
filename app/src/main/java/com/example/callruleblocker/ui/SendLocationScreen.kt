@@ -335,8 +335,12 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         item {
                             OutlinedButton(
                                 onClick = { 
-                                    isLiveMode = false 
-                                    context.stopService(android.content.Intent(context, LocationService::class.java))
+                                    try {
+                                        isLiveMode = false 
+                                        context.stopService(android.content.Intent(context, LocationService::class.java))
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("ShynaDiscovery", "Failed to stop location service", e)
+                                    }
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
@@ -350,9 +354,18 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                 if (isLiveMode) {
                     FloatingActionButton(
                         onClick = { 
-                            context.startForegroundService(android.content.Intent(context, LocationService::class.java))
-                            onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
-                            onBack() 
+                            try {
+                                context.startForegroundService(android.content.Intent(context, LocationService::class.java))
+                                onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
+                                onBack() 
+                            } catch (e: Exception) {
+                                android.util.Log.e("ShynaDiscovery", "Failed to start location service", e)
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && e is android.app.ForegroundServiceStartNotAllowedException) {
+                                    android.widget.Toast.makeText(context, "Cannot start location sharing from background", android.widget.Toast.LENGTH_LONG).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "Error sharing location: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }
                         },
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
