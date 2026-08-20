@@ -4,6 +4,7 @@ import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 enum class AppCallType { VOICE, VIDEO }
@@ -15,6 +16,8 @@ data class AppCall(
     val callerName: String = "",
     val callerPhoto: String? = null,
     val receiverUid: String = "",
+    val receiverName: String = "",
+    val receiverPhoto: String? = null,
     val type: AppCallType = AppCallType.VOICE,
     val status: AppCallStatus = AppCallStatus.RINGING,
     val roomName: String = "",
@@ -27,10 +30,13 @@ object CallSignalingManager {
     private var callListener: ListenerRegistration? = null
 
     fun startCall(
+        context: android.content.Context,
         callerUid: String,
         callerName: String,
         callerPhoto: String?,
         receiverUid: String,
+        receiverName: String,
+        receiverPhoto: String?,
         type: AppCallType,
         onCallCreated: (AppCall) -> Unit,
         onError: (Exception) -> Unit
@@ -43,6 +49,8 @@ object CallSignalingManager {
             callerName = callerName,
             callerPhoto = callerPhoto,
             receiverUid = receiverUid,
+            receiverName = receiverName,
+            receiverPhoto = receiverPhoto,
             type = type,
             status = AppCallStatus.RINGING,
             roomName = roomName

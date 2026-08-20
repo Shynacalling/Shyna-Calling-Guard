@@ -37,6 +37,26 @@ class CallActionReceiver : BroadcastReceiver() {
                 CallControlCenter.endAllActiveCalls()
                 OngoingCallNotification.cancel(context)
             }
+
+            "com.example.callruleblocker.action.ACCEPT_APP_CALL" -> {
+                val callId = intent.getStringExtra("callId") ?: return
+                val startIntent = Intent(context, AppCallActivity::class.java).apply {
+                    putExtra("callId", callId)
+                    putExtra("isIncoming", true)
+                    putExtra("autoAccept", true)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                context.startActivity(startIntent)
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                nm.cancel(callId.hashCode())
+            }
+
+            "com.example.callruleblocker.action.DECLINE_APP_CALL" -> {
+                val callId = intent.getStringExtra("callId") ?: return
+                com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(callId, com.example.callruleblocker.call.AppCallStatus.REJECTED)
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                nm.cancel(callId.hashCode())
+            }
         }
     }
 }

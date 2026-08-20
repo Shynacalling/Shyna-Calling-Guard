@@ -65,7 +65,9 @@ class LocationService : Service() {
     }
 
     private fun startLocationUpdates() {
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000L).build()
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+            .setMinUpdateIntervalMillis(500L)
+            .build()
         try {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 fusedLocationClient.requestLocationUpdates(request, locationCallback, android.os.Looper.getMainLooper())

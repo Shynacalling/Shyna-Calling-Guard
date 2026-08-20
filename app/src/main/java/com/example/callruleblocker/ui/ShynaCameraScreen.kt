@@ -23,7 +23,9 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,6 +48,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -97,6 +101,7 @@ private fun CameraContent(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
@@ -211,20 +216,33 @@ private fun CameraContent(
                     modifier = Modifier
                         .size(80.dp)
                         .pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = {
-                                    takePhoto(context, imageCapture, cameraExecutor, flashEnabled) { uri ->
-                                        onMediaCaptured(uri, false)
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val down = awaitFirstDown()
+                                    var isLongClick = false
+                                    val longClickJob = scope.launch {
+                                        delay(viewConfiguration.longPressTimeoutMillis)
+                                        isLongClick = true
+                                        isRecordingVideo = true
+                                        recording = startRecording(context, videoCapture, cameraExecutor) { uri ->
+                                            onMediaCaptured(uri, true)
+                                        }
                                     }
-                                },
-                                onLongPress = {
-                                    isRecordingVideo = true
-                                    recording = startRecording(context, videoCapture, cameraExecutor) { uri ->
+                                    
+                                    val up = waitForUpOrCancellation()
+                                    longClickJob.cancel()
+                                    
+                                    if (isLongClick) {
                                         isRecordingVideo = false
-                                        onMediaCaptured(uri, true)
+                                        recording?.stop()
+                                        recording = null
+                                    } else if (up != null) {
+                                        takePhoto(context, imageCapture, cameraExecutor, flashEnabled) { uri ->
+                                            onMediaCaptured(uri, false)
+                                        }
                                     }
                                 }
-                            )
+                            }
                         },
                     contentAlignment = Alignment.Center
                 ) {

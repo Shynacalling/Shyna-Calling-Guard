@@ -1,19 +1,22 @@
 package com.example.callruleblocker
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import android.Manifest
-import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,29 +27,30 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.callruleblocker.call.*
-import com.example.callruleblocker.ui.theme.CallRuleBlockerTheme
+import com.example.callruleblocker.ui.ShynaDesign
+import com.example.callruleblocker.ui.ShynaTheme
+import com.example.callruleblocker.ui.ThemeMode
+import com.example.callruleblocker.ui.VideoRenderer
+import io.livekit.android.events.RoomEvent
+import io.livekit.android.events.collect
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.VideoTrack
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import com.example.callruleblocker.ui.VideoRenderer
-import io.livekit.android.events.RoomEvent
-import io.livekit.android.events.collect
 import kotlin.time.Duration.Companion.milliseconds
 
 class AppCallActivity : ComponentActivity() {
-    private companion object {
-        const val TAG = "ShynaCall"
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -58,7 +62,7 @@ class AppCallActivity : ComponentActivity() {
         val isIncoming = intent.getBooleanExtra("isIncoming", false)
 
         setContent {
-            CallRuleBlockerTheme {
+            ShynaTheme(mode = ThemeMode.DARK) {
                 AppCallScreen(callId, isIncoming, onExit = { finish() })
             }
         }
@@ -85,30 +89,9 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        if (micGranted) {
-            // Permissions granted, will be re-checked in joinCall if triggered again
-        } else {
-            Toast.makeText(context, "Microphone permission is required for calls", Toast.LENGTH_LONG).show()
+        if (permissions[Manifest.permission.RECORD_AUDIO] != true) {
+            Toast.makeText(context, "Microphone access is required", Toast.LENGTH_LONG).show()
             onExit()
-        }
-    }
-
-    val checkPermissions = {
-        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (call?.type == AppCallType.VIDEO) {
-            permissions.add(Manifest.permission.CAMERA)
-        }
-        
-        val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
-        
-        if (missing.isNotEmpty()) {
-            permissionLauncher.launch(missing.toTypedArray())
-            false
-        } else {
-            true
         }
     }
 
@@ -118,159 +101,132 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
             if (updatedCall.status == AppCallStatus.ENDED || 
                 updatedCall.status == AppCallStatus.REJECTED || 
                 updatedCall.status == AppCallStatus.MISSED) {
-                Log.d("ShynaCall", "CALL_ENDED: id=$callId status=${updatedCall.status}")
                 onExit()
             }
         }
-        onDispose {
-            registration.remove()
-        }
-    }
-
-    // Handle missed call timeout
-    LaunchedEffect(call?.status) {
-        if (call?.status == AppCallStatus.RINGING && !isIncoming) {
-            delay(45000.milliseconds) // 45 seconds timeout
-            if (call?.status == AppCallStatus.RINGING) {
-                CallSignalingManager.updateCallStatus(callId, AppCallStatus.MISSED)
-            }
-        }
+        onDispose { registration.remove() }
     }
 
     val joinCall = {
-        if (checkPermissions()) {
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (call?.type == AppCallType.VIDEO) permissions.add(Manifest.permission.CAMERA)
+        
+        if (permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             scope.launch {
                 try {
-                    Log.d("ShynaCall", "TOKEN_REQUEST: room=${call?.roomName} user=${com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid}")
-                    Log.d("ShynaCall", "LIVEKIT_CONNECTING")
-                    val r = callManager.joinRoom(call!!.roomName, com.google.firebase.auth.FirebaseAuth.getInstance().currentUser!!.uid)
+                    val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+                    if (currentUid == null || call == null) {
+                        Log.e("ShynaCall", "Join Failed: UID or Call is null")
+                        onExit()
+                        return@launch
+                    }
+                    val r = callManager.joinRoom(call!!.roomName, currentUid)
                     room = r
-                    Log.d("ShynaCall", "LIVEKIT_CONNECTED")
-                    Log.d("ShynaCall", "TOKEN_SUCCESS")
-                    
                     if (call?.type == AppCallType.VIDEO) {
                         localVideoTrack = r.localParticipant.videoTrackPublications.firstOrNull()?.second as? VideoTrack
                     }
-
                     r.events.collect { event ->
-                        when (event) {
-                            is RoomEvent.TrackSubscribed -> {
-                                if (event.track is VideoTrack) {
-                                    Log.d("ShynaCall", "VIDEO_TRACK_SUBSCRIBED")
-                                    remoteVideoTrack = event.track as VideoTrack
-                                } else {
-                                    Log.d("ShynaCall", "AUDIO_TRACK_SUBSCRIBED")
-                                }
-                            }
-                            is RoomEvent.ParticipantConnected -> {
-                                Log.d("ShynaCall", "REMOTE_PARTICIPANT_CONNECTED: ${event.participant.sid}")
-                            }
-                            else -> {}
+                        if (event is RoomEvent.TrackSubscribed && event.track is VideoTrack) {
+                            remoteVideoTrack = event.track as VideoTrack
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e("ShynaCall", "CALL_FAILED: ${e.message}", e)
-                    Toast.makeText(context, "Connection failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-                    CallSignalingManager.updateCallStatus(callId, AppCallStatus.FAILED)
+                    Log.e("ShynaCall", "Join Failed: ${e.message}")
                     onExit()
                 }
             }
+        } else {
+            permissionLauncher.launch(permissions.toTypedArray())
         }
     }
 
-    if (call == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color(0xFF00A884))
-        }
-    } else {
-        when (call!!.status) {
-            AppCallStatus.RINGING -> {
-                if (isIncoming) {
-                    IncomingCallUI(call!!, 
-                        onAccept = { 
-                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.ACCEPTED)
-                            joinCall()
-                        }, 
-                        onReject = { 
-                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
-                            onExit()
-                        }
-                    )
-                } else {
-                    OutgoingCallUI(call!!, onCancel = {
-                        CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
-                        onExit()
-                    })
-                }
+    Box(Modifier.fillMaxSize().background(ShynaDesign.premiumGradient())) {
+        if (call == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = ShynaDesign.colors.BrandGreen)
             }
-            AppCallStatus.ACCEPTED, AppCallStatus.CONNECTED -> {
-                if (room == null && isIncoming) {
-                    // Already joined in onAccept
-                } else if (room == null && !isIncoming) {
-                    LaunchedEffect(Unit) { joinCall() }
+        } else {
+            when (call!!.status) {
+                AppCallStatus.RINGING -> {
+                    if (isIncoming) {
+                        IncomingCallUI(call!!, 
+                            onAccept = { 
+                                CallSignalingManager.updateCallStatus(callId, AppCallStatus.ACCEPTED)
+                                joinCall()
+                            }, 
+                            onReject = { 
+                                CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+                                onExit()
+                            }
+                        )
+                    } else {
+                        OutgoingCallUI(call!!, onCancel = {
+                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
+                            onExit()
+                        })
+                    }
                 }
+                AppCallStatus.ACCEPTED, AppCallStatus.CONNECTED -> {
+                    if (room == null && !isIncoming) {
+                        LaunchedEffect(Unit) { joinCall() }
+                    }
 
-                if (call!!.type == AppCallType.VIDEO) {
-                    VideoCallUI(
-                        call = call!!,
-                        room = room,
-                        remoteTrack = remoteVideoTrack,
-                        localTrack = localVideoTrack,
-                        isMuted = isMuted,
-                        isCameraOff = isCameraOff,
-                        isSpeakerOn = isSpeakerOn,
-                        onMuteToggle = {
-                            isMuted = !isMuted
-                            scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
-                        },
-                        onCameraToggle = {
-                            isCameraOff = !isCameraOff
-                            scope.launch { room?.localParticipant?.setCameraEnabled(!isCameraOff) }
-                        },
-                        onSpeakerToggle = {
-                            isSpeakerOn = !isSpeakerOn
-                            audioManager.isSpeakerphoneOn = isSpeakerOn
-                            if (isSpeakerOn) {
-                                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                            }
-                        },
-                        onSwitchCamera = {
-                            val localVideoTrack = room?.localParticipant?.getTrackPublication(io.livekit.android.room.track.Track.Source.CAMERA)?.track as? io.livekit.android.room.track.LocalVideoTrack
-                            localVideoTrack?.let { track ->
-                                track.switchCamera()
+                    if (call!!.type == AppCallType.VIDEO) {
+                        VideoCallUI(
+                            call = call!!,
+                            isIncoming = isIncoming,
+                            room = room,
+                            remoteTrack = remoteVideoTrack,
+                            localTrack = localVideoTrack,
+                            isMuted = isMuted,
+                            isCameraOff = isCameraOff,
+                            isSpeakerOn = isSpeakerOn,
+                            onMuteToggle = {
+                                isMuted = !isMuted
+                                scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
+                            },
+                            onCameraToggle = {
+                                isCameraOff = !isCameraOff
+                                scope.launch { room?.localParticipant?.setCameraEnabled(!isCameraOff) }
+                            },
+                            onSpeakerToggle = {
+                                isSpeakerOn = !isSpeakerOn
+                                audioManager.isSpeakerphoneOn = isSpeakerOn
+                            },
+                            onSwitchCamera = {
+                                val track = room?.localParticipant?.getTrackPublication(io.livekit.android.room.track.Track.Source.CAMERA)?.track as? io.livekit.android.room.track.LocalVideoTrack
+                                track?.switchCamera()
                                 isFrontCamera = !isFrontCamera
+                            },
+                            onEndCall = {
+                                CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
+                                onExit()
                             }
-                        },
-                        onEndCall = {
-                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
-                            onExit()
-                        }
-                    )
-                } else {
-                    VoiceCallUI(
-                        call = call!!,
-                        isMuted = isMuted,
-                        isSpeakerOn = isSpeakerOn,
-                        onMuteToggle = {
-                            isMuted = !isMuted
-                            scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
-                        },
-                        onSpeakerToggle = {
-                            isSpeakerOn = !isSpeakerOn
-                            audioManager.isSpeakerphoneOn = isSpeakerOn
-                            if (isSpeakerOn) {
-                                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                        )
+                    } else {
+                        VoiceCallUI(
+                            call = call!!,
+                            isIncoming = isIncoming,
+                            isMuted = isMuted,
+                            isSpeakerOn = isSpeakerOn,
+                            onMuteToggle = {
+                                isMuted = !isMuted
+                                scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
+                            },
+                            onSpeakerToggle = {
+                                isSpeakerOn = !isSpeakerOn
+                                audioManager.isSpeakerphoneOn = isSpeakerOn
+                            },
+                            onEndCall = {
+                                CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
+                                onExit()
                             }
-                        },
-                        onEndCall = {
-                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
-                            onExit()
-                        }
-                    )
+                        )
+                    }
                 }
+                else -> onExit()
             }
-            else -> onExit()
         }
     }
 
@@ -285,37 +241,42 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
 
 @Composable
 fun IncomingCallUI(call: AppCall, onAccept: () -> Unit, onReject: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF121B22))) {
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1f, targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse), label = "scale"
+    )
+
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(top = 100.dp),
+            modifier = Modifier.fillMaxSize().padding(top = 120.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Surface(shape = CircleShape, modifier = Modifier.size(120.dp), color = Color.Gray) {
+            Surface(
+                shape = CircleShape, 
+                modifier = Modifier.size(160.dp).scale(scale).border(BorderStroke(4.dp, ShynaDesign.colors.BrandGreen), CircleShape),
+                color = ShynaDesign.colors.SurfaceBg
+            ) {
                 if (!call.callerPhoto.isNullOrBlank()) {
-                    AsyncImage(
-                        model = call.callerPhoto, 
-                        contentDescription = null, 
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    AsyncImage(model = call.callerPhoto, contentDescription = null, contentScale = ContentScale.Crop)
                 } else {
-                    Icon(Icons.Default.Person, null, modifier = Modifier.padding(30.dp), tint = Color.White)
+                    Icon(Icons.Default.Person, null, modifier = Modifier.padding(40.dp), tint = ShynaDesign.colors.TextSecondary)
                 }
             }
-            Spacer(Modifier.height(24.dp))
-            Text(call.callerName, color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            Text("Shyna ${call.type.name.lowercase().replaceFirstChar { it.uppercase() }} Call", color = Color(0xFF00A884), fontSize = 16.sp)
+            Spacer(Modifier.height(40.dp))
+            Text(call.callerName, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Incoming Shyna ${call.type.name.lowercase()} call...", color = ShynaDesign.colors.BrandGreen, fontSize = 16.sp, fontWeight = FontWeight.Medium)
         }
 
         Row(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp).fillMaxWidth(),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 100.dp).fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            FloatingActionButton(onClick = onReject, containerColor = Color.Red, contentColor = Color.White, shape = CircleShape) {
-                Icon(Icons.Default.CallEnd, null)
+            FloatingActionButton(onClick = onReject, containerColor = Color(0xFFE53935), shape = CircleShape, modifier = Modifier.size(80.dp)) {
+                Icon(Icons.Default.CallEnd, null, tint = Color.White, modifier = Modifier.size(36.dp))
             }
-            FloatingActionButton(onClick = onAccept, containerColor = Color(0xFF00A884), contentColor = Color.White, shape = CircleShape) {
-                Icon(if (call.type == AppCallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call, null)
+            FloatingActionButton(onClick = onAccept, containerColor = ShynaDesign.colors.BrandGreen, shape = CircleShape, modifier = Modifier.size(80.dp)) {
+                Icon(if (call.type == AppCallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(36.dp))
             }
         }
     }
@@ -323,58 +284,69 @@ fun IncomingCallUI(call: AppCall, onAccept: () -> Unit, onReject: () -> Unit) {
 
 @Composable
 fun OutgoingCallUI(call: AppCall, onCancel: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF121B22))) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(top = 100.dp),
+            modifier = Modifier.fillMaxSize().padding(top = 120.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Surface(shape = CircleShape, modifier = Modifier.size(120.dp), color = Color.Gray) {
-                // Should show receiver info here, but signaling currently has caller info
-                Icon(Icons.Default.Person, null, modifier = Modifier.padding(30.dp), tint = Color.White)
+            Surface(shape = CircleShape, modifier = Modifier.size(160.dp), border = BorderStroke(2.dp, Color.White.copy(0.2f)), color = ShynaDesign.colors.SurfaceBg) {
+                val photo = call.receiverPhoto
+                if (!photo.isNullOrBlank()) {
+                    AsyncImage(model = photo, contentDescription = null, contentScale = ContentScale.Crop)
+                } else {
+                    Icon(Icons.Default.Person, null, modifier = Modifier.padding(40.dp), tint = ShynaDesign.colors.TextSecondary)
+                }
             }
-            Spacer(Modifier.height(24.dp))
-            Text("Ringing...", color = Color.White, fontSize = 24.sp)
+            Spacer(Modifier.height(40.dp))
+            Text(call.receiverName, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Calling...", color = ShynaDesign.colors.BrandGreen, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
 
         FloatingActionButton(
-            onClick = onCancel,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp),
-            containerColor = Color.Red,
-            contentColor = Color.White,
+            onClick = { onCancel() },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 100.dp).size(80.dp),
+            containerColor = Color(0xFFE53935),
             shape = CircleShape
         ) {
-            Icon(Icons.Default.CallEnd, null)
+            Icon(Icons.Default.CallEnd, null, tint = Color.White, modifier = Modifier.size(36.dp))
         }
     }
 }
 
 @Composable
-fun VoiceCallUI(call: AppCall, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF121B22))) {
+fun VoiceCallUI(call: AppCall, isIncoming: Boolean, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
+    val peerName = if (isIncoming) call.callerName else call.receiverName
+    val peerPhoto = if (isIncoming) call.callerPhoto else call.receiverPhoto
+
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(top = 100.dp),
+            modifier = Modifier.fillMaxSize().padding(top = 120.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Surface(shape = CircleShape, modifier = Modifier.size(120.dp), color = Color.Gray) {
-                Icon(Icons.Default.Person, null, modifier = Modifier.padding(30.dp), tint = Color.White)
+            Surface(shape = CircleShape, modifier = Modifier.size(180.dp), border = BorderStroke(3.dp, ShynaDesign.colors.BrandGreen), color = ShynaDesign.colors.SurfaceBg) {
+                if (!peerPhoto.isNullOrBlank()) {
+                    AsyncImage(model = peerPhoto, contentDescription = null, contentScale = ContentScale.Crop)
+                } else {
+                    Icon(Icons.Default.Person, null, modifier = Modifier.padding(50.dp), tint = ShynaDesign.colors.TextSecondary)
+                }
             }
-            Spacer(Modifier.height(24.dp))
-            Text(call.callerName, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("00:00", color = Color.Gray, fontSize = 16.sp)
+            Spacer(Modifier.height(40.dp))
+            Text(peerName, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
+            Text("Secure Voice Call", color = ShynaDesign.colors.BrandGreen, fontSize = 16.sp)
         }
 
         Row(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp).fillMaxWidth().padding(horizontal = 32.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onMuteToggle, modifier = Modifier.background(if (isMuted) Color.White else Color.DarkGray, CircleShape)) {
+            IconButton(onClick = onMuteToggle, modifier = Modifier.size(64.dp).background(if (isMuted) Color.White else Color.White.copy(0.1f), CircleShape)) {
                 Icon(if (isMuted) Icons.Default.MicOff else Icons.Default.Mic, null, tint = if (isMuted) Color.Black else Color.White)
             }
-            FloatingActionButton(onClick = onEndCall, containerColor = Color.Red, contentColor = Color.White, shape = CircleShape) {
-                Icon(Icons.Default.CallEnd, null)
+            FloatingActionButton(onClick = onEndCall, containerColor = Color(0xFFE53935), shape = CircleShape, modifier = Modifier.size(84.dp)) {
+                Icon(Icons.Default.CallEnd, null, tint = Color.White, modifier = Modifier.size(40.dp))
             }
-            IconButton(onClick = onSpeakerToggle, modifier = Modifier.background(if (isSpeakerOn) Color.White else Color.DarkGray, CircleShape)) {
+            IconButton(onClick = onSpeakerToggle, modifier = Modifier.size(64.dp).background(if (isSpeakerOn) Color.White else Color.White.copy(0.1f), CircleShape)) {
                 Icon(if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeMute, null, tint = if (isSpeakerOn) Color.Black else Color.White)
             }
         }
@@ -382,42 +354,46 @@ fun VoiceCallUI(call: AppCall, isMuted: Boolean, isSpeakerOn: Boolean, onMuteTog
 }
 
 @Composable
-fun VideoCallUI(call: AppCall, room: Room?, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
+fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
+    val peerName = if (isIncoming) call.callerName else call.receiverName
+    
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (room != null && remoteTrack != null) {
             VideoRenderer(remoteTrack, room, modifier = Modifier.fillMaxSize())
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("Waiting for remote...", color = Color.White)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = ShynaDesign.colors.BrandGreen)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Connecting to $peerName...", color = Color.White)
+                }
             }
         }
 
         if (room != null && localTrack != null && !isCameraOff) {
-            Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).size(100.dp, 150.dp).clip(RoundedCornerShape(8.dp)).background(Color.DarkGray)) {
+            Box(modifier = Modifier.align(Alignment.TopEnd).padding(20.dp).size(120.dp, 180.dp).clip(RoundedCornerShape(16.dp)).background(Color.DarkGray).border(2.dp, Color.White.copy(0.3f), RoundedCornerShape(16.dp))) {
                 VideoRenderer(localTrack, room, modifier = Modifier.fillMaxSize())
             }
         }
 
-        Row(
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 40.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onSpeakerToggle, modifier = Modifier.background(if (isSpeakerOn) Color.White else Color.DarkGray.copy(0.6f), CircleShape)) {
-                Icon(Icons.Default.VolumeUp, null, tint = if (isSpeakerOn) Color.Black else Color.White)
+        Column(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 50.dp).fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                ControlIcon(if (isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeMute, isSpeakerOn, onSpeakerToggle)
+                ControlIcon(if (isCameraOff) Icons.Default.VideocamOff else Icons.Default.Videocam, isCameraOff, onCameraToggle)
+                ControlIcon(if (isMuted) Icons.Default.MicOff else Icons.Default.Mic, isMuted, onMuteToggle)
+                ControlIcon(Icons.Default.SwitchCamera, false, onSwitchCamera)
             }
-            IconButton(onClick = onCameraToggle, modifier = Modifier.background(if (isCameraOff) Color.Red else Color.DarkGray.copy(0.6f), CircleShape)) {
-                Icon(if (isCameraOff) Icons.Default.VideocamOff else Icons.Default.Videocam, null, tint = Color.White)
-            }
-            IconButton(onClick = onMuteToggle, modifier = Modifier.background(if (isMuted) Color.Red else Color.DarkGray.copy(0.6f), CircleShape)) {
-                Icon(if (isMuted) Icons.Default.MicOff else Icons.Default.Mic, null, tint = Color.White)
-            }
-            IconButton(onClick = onSwitchCamera, modifier = Modifier.background(Color.DarkGray.copy(0.6f), CircleShape)) {
-                Icon(Icons.Default.SwitchCamera, null, tint = Color.White)
-            }
-            FloatingActionButton(onClick = onEndCall, containerColor = Color.Red, contentColor = Color.White, shape = CircleShape) {
-                Icon(Icons.Default.CallEnd, null)
+            Spacer(Modifier.height(30.dp))
+            FloatingActionButton(onClick = onEndCall, containerColor = Color(0xFFE53935), shape = CircleShape, modifier = Modifier.align(Alignment.CenterHorizontally).size(84.dp)) {
+                Icon(Icons.Default.CallEnd, null, tint = Color.White, modifier = Modifier.size(40.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun ControlIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(56.dp).background(if (active) Color.White else Color.Black.copy(0.5f), CircleShape).border(1.dp, Color.White.copy(0.2f), CircleShape)) {
+        Icon(icon, null, tint = if (active) Color.Black else Color.White)
     }
 }

@@ -1,5 +1,6 @@
 package com.example.callruleblocker.ui
 
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -30,6 +31,7 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,6 +42,8 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     var isLiveMode by remember { mutableStateOf(false) }
     var selectedDuration by remember { mutableStateOf("1 hour") }
     var comment by remember { mutableStateOf("") }
+    var accuracy by remember { mutableStateOf(0f) }
+    val scope = rememberCoroutineScope()
     val durations = listOf("15 minutes", "30 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "5 hours", "6 hours", "8 hours", "24 hours")
 
     val darkMapStyle = """
@@ -145,17 +149,47 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
         }
     }
 
-    LaunchedEffect(Unit) {
+    fun requestSingleUpdate() {
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).addOnSuccessListener { location ->
-                location?.let {
-                    val latLng = LatLng(it.latitude, it.longitude)
-                    cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 15f)
+            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { location ->
+                    location?.let {
+                        val latLng = LatLng(it.latitude, it.longitude)
+                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
+                        markerState.position = latLng
+                        accuracy = it.accuracy
+                    }
+                }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        val locationCallback = object : com.google.android.gms.location.LocationCallback() {
+            override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
+                result.lastLocation?.let { location ->
+                    val latLng = LatLng(location.latitude, location.longitude)
+                    // Auto-zoom only on first discovery or if manually requested via accuracy reset
+                    if (accuracy == 0f) {
+                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
+                    }
                     markerState.position = latLng
+                    accuracy = location.accuracy
                 }
             }
+        }
+
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
+                .setMinUpdateIntervalMillis(200L)
+                .setWaitForAccurateLocation(true) // DEEP UNIVERSAL RULE: Wait for high accuracy
+                .build()
+            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, android.os.Looper.getMainLooper())
         } else {
             locationPermissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+
+        onDispose {
+            fusedLocationClient.removeLocationUpdates(locationCallback)
         }
     }
 
@@ -170,10 +204,13 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { }) {
+                    IconButton(onClick = { /* Search logic */ }) {
                         Icon(Icons.Outlined.Search, contentDescription = "Search", tint = Color.White)
                     }
-                    IconButton(onClick = { }) {
+                    IconButton(onClick = { 
+                        accuracy = 0f
+                        requestSingleUpdate() 
+                    }) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = Color.White)
                     }
                 },
@@ -228,7 +265,13 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         .align(Alignment.TopEnd)
                         .size(48.dp)
                         .background(Color.White, CircleShape)
-                        .clickable { },
+                        .clickable { 
+                            scope.launch {
+                                cameraPositionState.animate(
+                                    com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(markerState.position, 17f)
+                                )
+                            }
+                        },
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(Icons.Outlined.MyLocation, contentDescription = "My location", tint = Color.Black)
@@ -265,16 +308,25 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         }
 
                         item {
+                            val isAccurateEnough = accuracy > 0 && accuracy < 100 // 100m threshold for "proper"
                             LocationActionRow(
                                 title = "Send your current location",
-                                subtitle = "Accurate to 29 meters",
+                                subtitle = when {
+                                    accuracy == 0f -> "Searching for GPS..."
+                                    accuracy < 20 -> "High accuracy • ${accuracy.toInt()} meters"
+                                    else -> "Accurate to ${accuracy.toInt()} meters"
+                                },
                                 icon = Icons.Outlined.MyLocation,
                                 iconBg = Color.Black,
-                                iconTint = Color(0xFF00E676),
-                                border = true,
+                                iconTint = if (isAccurateEnough) Color(0xFF00E676) else Color.Gray,
+                                border = isAccurateEnough,
                                 onClick = {
-                                    onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
-                                    onBack()
+                                    if (accuracy > 0) {
+                                        onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
+                                        onBack()
+                                    } else {
+                                        Toast.makeText(context, "Waiting for better GPS accuracy...", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             )
                         }
