@@ -49,9 +49,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
-import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.Call
+import com.example.callruleblocker.call.CallStateController
+import com.example.callruleblocker.call.MainCallType
+import com.example.callruleblocker.call.GlobalCallState
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.outlined.*
@@ -660,16 +664,40 @@ private fun MoreMenuButton(
             onDismissRequest = { onMenuExpandedChange(false) },
             modifier = Modifier.background(Color(0xFF17121F))
         ) {
-            DropdownMenuItem(
-                text = { Text("Offline Call", color = Color.White) },
-                leadingIcon = { Icon(Icons.Outlined.Phone, null, tint = Color(0xFF00C853)) },
-                onClick = { onMenuExpandedChange(false); onOpenOfflineCall() }
-            )
-            DropdownMenuItem(
-                text = { Text("Shyna Pro Link", color = Color.White) },
-                leadingIcon = { Icon(Icons.Outlined.Hub, null, tint = Color(0xFF2979FF)) },
-                onClick = { onMenuExpandedChange(false); onOpenOnlineCall() }
-            )
+            val secondaryFeatures = CallStateController.getSecondaryFeatures()
+            secondaryFeatures.forEach { feature ->
+                when (feature) {
+                    MainCallType.PHONE_DIALER -> {
+                        DropdownMenuItem(
+                            text = { Text("Phone Dialer", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Outlined.Dialpad, null, tint = Color(0xFFD4A017)) },
+                            onClick = { onMenuExpandedChange(false); /* Navigate to Dialer - though we are already here */ }
+                        )
+                    }
+                    MainCallType.SHYNA_LINK -> {
+                        DropdownMenuItem(
+                            text = { Text("Shyna Link", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Default.WorkspacePremium, null, tint = Color(0xFFD4A017)) },
+                            onClick = { 
+                                onMenuExpandedChange(false)
+                                CallStateController.setPrimaryFeature(MainCallType.SHYNA_LINK)
+                                onOpenOnlineCall() 
+                            }
+                        )
+                    }
+                    MainCallType.OFFLINE_CALL -> {
+                        DropdownMenuItem(
+                            text = { Text("Offline Call", color = Color.White) },
+                            leadingIcon = { Icon(Icons.Outlined.SettingsInputAntenna, null, tint = Color(0xFFD4A017)) },
+                            onClick = { 
+                                onMenuExpandedChange(false)
+                                CallStateController.setPrimaryFeature(MainCallType.OFFLINE_CALL)
+                                onOpenOfflineCall() 
+                            }
+                        )
+                    }
+                }
+            }
             HorizontalDivider(color = Color(0xFF3C3245))
             DropdownMenuItem(
                 text = { Text("Block & SIM rules") },

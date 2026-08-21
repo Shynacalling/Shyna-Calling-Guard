@@ -23,11 +23,26 @@ object CallControlCenter {
     fun add(call: Call) {
         calls += call
         _allCalls.value = calls.toList()
+        updateGlobalState()
     }
 
     fun remove(call: Call) {
         calls -= call
         _allCalls.value = calls.toList()
+        updateGlobalState()
+    }
+
+    private fun updateGlobalState() {
+        val activeCalls = calls.filter { it.state != Call.STATE_DISCONNECTED }
+        val hasActive = activeCalls.isNotEmpty()
+        
+        if (!hasActive) {
+            CallStateController.reportCallEvent(MainCallType.PHONE_DIALER, GlobalCallState.ENDED)
+        } else {
+            val ringing = activeCalls.any { it.state == Call.STATE_RINGING }
+            val state = if (ringing) GlobalCallState.INCOMING else GlobalCallState.ACTIVE
+            CallStateController.reportCallEvent(MainCallType.PHONE_DIALER, state)
+        }
     }
 
     fun updateAudioState(state: CallAudioState) {

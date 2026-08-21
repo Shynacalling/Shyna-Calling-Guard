@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -60,17 +61,18 @@ class AppCallActivity : ComponentActivity() {
 
         val callId = intent.getStringExtra("callId") ?: return finish()
         val isIncoming = intent.getBooleanExtra("isIncoming", false)
+        val autoAccept = intent.getBooleanExtra("autoAccept", false)
 
         setContent {
             ShynaTheme(mode = ThemeMode.DARK) {
-                AppCallScreen(callId, isIncoming, onExit = { finish() })
+                AppCallScreen(callId, isIncoming, autoAccept, onExit = { finish() })
             }
         }
     }
 }
 
 @Composable
-fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
+fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onExit: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var call by remember { mutableStateOf<AppCall?>(null) }
@@ -82,9 +84,38 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
     var isCameraOff by remember { mutableStateOf(false) }
     var isSpeakerOn by remember { mutableStateOf(false) }
     var isFrontCamera by remember { mutableStateOf(true) }
+    var callDuration by remember { mutableLongStateOf(0L) }
 
     val callManager = remember { LiveKitCallManager(context) }
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    // BACK BUTTON PROTECTION
+    BackHandler(enabled = true) {
+        // Prevent accidental exit during active call. 
+        // User must explicitly press "End Call" or "Reject".
+        Log.d("ShynaCall", "Back gesture blocked in Call Screen")
+    }
+
+    // TIMEOUT LOGIC (45 Seconds)
+    LaunchedEffect(call?.status) {
+        if (call?.status == AppCallStatus.RINGING) {
+            delay(45000)
+            if (call?.status == AppCallStatus.RINGING) {
+                CallSignalingManager.updateCallStatus(callId, AppCallStatus.MISSED)
+                onExit()
+            }
+        }
+    }
+
+    // CALL TIMER
+    LaunchedEffect(call?.status) {
+        if (call?.status == AppCallStatus.CONNECTED) {
+            while (true) {
+                delay(1000)
+                callDuration++
+            }
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -93,18 +124,6 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
             Toast.makeText(context, "Microphone access is required", Toast.LENGTH_LONG).show()
             onExit()
         }
-    }
-
-    DisposableEffect(callId) {
-        val registration = CallSignalingManager.listenToCall(callId) { updatedCall ->
-            call = updatedCall
-            if (updatedCall.status == AppCallStatus.ENDED || 
-                updatedCall.status == AppCallStatus.REJECTED || 
-                updatedCall.status == AppCallStatus.MISSED) {
-                onExit()
-            }
-        }
-        onDispose { registration.remove() }
     }
 
     val joinCall = {
@@ -125,7 +144,13 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
                     room = r
                     if (call?.type == AppCallType.VIDEO) {
                         localVideoTrack = r.localParticipant.videoTrackPublications.firstOrNull()?.second as? VideoTrack
+                        scope.launch { r.localParticipant.setCameraEnabled(!isCameraOff) }
                     }
+                    scope.launch { r.localParticipant.setMicrophoneEnabled(!isMuted) }
+                    
+                    CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ACTIVE, callId)
+                    CallSignalingManager.updateCallStatus(callId, AppCallStatus.CONNECTED)
+
                     r.events.collect { event ->
                         if (event is RoomEvent.TrackSubscribed && event.track is VideoTrack) {
                             remoteVideoTrack = event.track as VideoTrack
@@ -141,8 +166,47 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
         }
     }
 
+    DisposableEffect(callId) {
+        val registration = CallSignalingManager.listenToCall(callId) { updatedCall ->
+            call = updatedCall
+            
+            // Sync with Global Call Controller
+            when (updatedCall.status) {
+                AppCallStatus.RINGING -> {
+                    if (isIncoming) {
+                        CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.INCOMING, callId)
+                        if (autoAccept) {
+                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.ACCEPTED)
+                            joinCall()
+                        }
+                    }
+                }
+                AppCallStatus.ACCEPTED, AppCallStatus.CONNECTED -> {
+                    CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ACTIVE, callId)
+                }
+                AppCallStatus.ENDED, AppCallStatus.REJECTED, AppCallStatus.MISSED -> {
+                    CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ENDED, callId)
+                    onExit()
+                }
+                else -> {}
+            }
+        }
+        onDispose { registration.remove() }
+    }
+
+    val globalState by CallStateController.globalState.collectAsState()
+
     Box(Modifier.fillMaxSize().background(ShynaDesign.premiumGradient())) {
-        if (call == null) {
+        if (globalState == GlobalCallState.INTERRUPTED) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Call Interrupted", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("A higher priority call is active.", color = Color.White.copy(0.7f), fontSize = 16.sp)
+                    Spacer(Modifier.height(24.dp))
+                    Text("Please wait...", color = ShynaDesign.colors.BrandGreen)
+                }
+            }
+        } else if (call == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = ShynaDesign.colors.BrandGreen)
             }
@@ -177,6 +241,7 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
                             call = call!!,
                             isIncoming = isIncoming,
                             room = room,
+                            duration = callDuration,
                             remoteTrack = remoteVideoTrack,
                             localTrack = localVideoTrack,
                             isMuted = isMuted,
@@ -208,6 +273,7 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
                         VoiceCallUI(
                             call = call!!,
                             isIncoming = isIncoming,
+                            duration = callDuration,
                             isMuted = isMuted,
                             isSpeakerOn = isSpeakerOn,
                             onMuteToggle = {
@@ -235,6 +301,15 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, onExit: () -> Unit) {
             callManager.leaveRoom()
             audioManager.isSpeakerphoneOn = false
             audioManager.mode = AudioManager.MODE_NORMAL
+            
+            // SAVE FINAL RECORD TO HISTORY
+            val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+            call?.let { c ->
+                if (currentUid != null) {
+                    val finalCall = c.copy(duration = callDuration)
+                    CallSignalingManager.saveCallHistory(finalCall, currentUid)
+                }
+            }
         }
     }
 }
@@ -314,9 +389,10 @@ fun OutgoingCallUI(call: AppCall, onCancel: () -> Unit) {
 }
 
 @Composable
-fun VoiceCallUI(call: AppCall, isIncoming: Boolean, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
+fun VoiceCallUI(call: AppCall, isIncoming: Boolean, duration: Long, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
     val peerName = if (isIncoming) call.callerName else call.receiverName
     val peerPhoto = if (isIncoming) call.callerPhoto else call.receiverPhoto
+    val statusText = if (call.status == AppCallStatus.CONNECTED) formatDuration(duration) else "Connecting..."
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -332,7 +408,7 @@ fun VoiceCallUI(call: AppCall, isIncoming: Boolean, isMuted: Boolean, isSpeakerO
             }
             Spacer(Modifier.height(40.dp))
             Text(peerName, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
-            Text("Secure Voice Call", color = ShynaDesign.colors.BrandGreen, fontSize = 16.sp)
+            Text(statusText, color = ShynaDesign.colors.BrandGreen, fontSize = 18.sp, fontWeight = FontWeight.Medium)
         }
 
         Row(
@@ -354,12 +430,21 @@ fun VoiceCallUI(call: AppCall, isIncoming: Boolean, isMuted: Boolean, isSpeakerO
 }
 
 @Composable
-fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
+fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, duration: Long, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
     val peerName = if (isIncoming) call.callerName else call.receiverName
-    
+    val statusText = if (call.status == AppCallStatus.CONNECTED) formatDuration(duration) else "Connecting..."
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (room != null && remoteTrack != null) {
             VideoRenderer(remoteTrack, room, modifier = Modifier.fillMaxSize())
+            
+            // Top Overlay for Name and Duration
+            Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent))).padding(24.dp)) {
+                Column {
+                    Text(peerName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(statusText, color = Color.White.copy(0.8f), fontSize = 14.sp)
+                }
+            }
         } else {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -396,4 +481,11 @@ private fun ControlIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, a
     IconButton(onClick = onClick, modifier = Modifier.size(56.dp).background(if (active) Color.White else Color.Black.copy(0.5f), CircleShape).border(1.dp, Color.White.copy(0.2f), CircleShape)) {
         Icon(icon, null, tint = if (active) Color.Black else Color.White)
     }
+}
+
+private fun formatDuration(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return if (h > 0) String.format("%02d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
 }

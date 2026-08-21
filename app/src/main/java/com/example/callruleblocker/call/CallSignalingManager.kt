@@ -21,7 +21,11 @@ data class AppCall(
     val type: AppCallType = AppCallType.VOICE,
     val status: AppCallStatus = AppCallStatus.RINGING,
     val roomName: String = "",
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val answeredAt: Long? = null,
+    val endedAt: Long? = null,
+    val duration: Long = 0,
+    val endReason: String? = null
 )
 
 object CallSignalingManager {
@@ -61,6 +65,12 @@ object CallSignalingManager {
             .addOnSuccessListener {
                 Log.d(TAG, "CALL_CREATED: $callId type=${type.name} room=$roomName")
                 onCallCreated(call)
+                
+                // NOTIFY RECEIVER VIA FCM (Safe Background Call)
+                val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+                scope.launch {
+                    LiveKitCallManager(context).notifyReceiver(call)
+                }
             }
             .addOnFailureListener { e ->
                 Log.e(TAG, "CALL_FAILED: ${e.message}", e)
@@ -86,6 +96,10 @@ object CallSignalingManager {
                         // Verify it's a recent call (within 1 minute) and still ringing
                         if (call.status == AppCallStatus.RINGING && System.currentTimeMillis() - call.timestamp < 60000) {
                             Log.d(TAG, "INCOMING_CALL: id=${call.id} caller=${call.callerName}")
+                            
+                            // Report to Central Controller
+                            CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.INCOMING, call.id)
+                            
                             onIncomingCall(call)
                         }
                     }
@@ -122,5 +136,24 @@ object CallSignalingManager {
     fun cleanup() {
         callListener?.remove()
         callListener = null
+    }
+
+    fun saveCallHistory(call: AppCall, currentUid: String) {
+        val historyEntry = hashMapOf(
+            "callId" to call.id,
+            "callerUid" to call.callerUid,
+            "callerName" to call.callerName,
+            "receiverUid" to call.receiverUid,
+            "receiverName" to call.receiverName,
+            "type" to call.type.name,
+            "status" to call.status.name,
+            "duration" to call.duration,
+            "timestamp" to com.google.firebase.Timestamp.now(),
+            "direction" to if (call.callerUid == currentUid) "outgoing" else "incoming"
+        )
+
+        db.collection("users").document(currentUid)
+            .collection("call_history").document(call.id)
+            .set(historyEntry, SetOptions.merge())
     }
 }

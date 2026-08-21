@@ -13,6 +13,10 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.RemoteMessage
+import com.example.callruleblocker.call.CallStateController
+import com.example.callruleblocker.call.GlobalCallState
+import com.example.callruleblocker.call.CallSignalingManager
+import com.example.callruleblocker.call.AppCallStatus
 
 class ShynaFCMService : FirebaseMessagingService() {
     private companion object {
@@ -41,6 +45,13 @@ class ShynaFCMService : FirebaseMessagingService() {
         val callerName = data["callerName"] ?: "Shyna User"
         val callType = data["callType"] ?: "VOICE"
 
+        // BUSY LOGIC
+        if (CallStateController.globalState.value == GlobalCallState.ACTIVE) {
+            Log.d(TAG, "User Busy: Auto-rejecting FCM call.")
+            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+            return
+        }
+
         showCallNotification(callId, callerName, callType)
     }
 
@@ -65,6 +76,20 @@ class ShynaFCMService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // ACCEPT ACTION
+        val acceptIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = "com.example.callruleblocker.action.ACCEPT_APP_CALL"
+            putExtra("callId", callId)
+        }
+        val acceptPending = PendingIntent.getBroadcast(this, 101, acceptIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        // DECLINE ACTION
+        val declineIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = "com.example.callruleblocker.action.DECLINE_APP_CALL"
+            putExtra("callId", callId)
+        }
+        val declinePending = PendingIntent.getBroadcast(this, 102, declineIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Incoming $callType Call")
@@ -72,6 +97,8 @@ class ShynaFCMService : FirebaseMessagingService() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(pendingIntent, true)
+            .addAction(android.R.drawable.ic_menu_call, "Accept", acceptPending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePending)
             .setAutoCancel(true)
             .build()
 
