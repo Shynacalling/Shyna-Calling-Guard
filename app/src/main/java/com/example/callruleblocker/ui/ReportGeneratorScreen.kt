@@ -1,6 +1,8 @@
 package com.example.callruleblocker.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.CallLog
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -24,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.callruleblocker.data.BlockedCallStore
 import com.example.callruleblocker.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -307,25 +310,27 @@ private suspend fun generateReport(context: Context, type: String): ReportData =
     val selection = "${CallLog.Calls.DATE} >= ?"
     val selectionArgs = arrayOf(startTime.toString())
 
-    runCatching {
-        context.contentResolver.query(CallLog.Calls.CONTENT_URI, projection, selection, selectionArgs, null)?.use { c ->
-            val typeIdx = c.getColumnIndexOrThrow(CallLog.Calls.TYPE)
-            val durIdx = c.getColumnIndexOrThrow(CallLog.Calls.DURATION)
-            val nameIdx = c.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)
-            val numIdx = c.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
-            
-            while (c.moveToNext()) {
-                total++
-                val t = c.getInt(typeIdx)
-                duration += c.getLong(durIdx)
-                when (t) {
-                    CallLog.Calls.INCOMING_TYPE -> inc++
-                    CallLog.Calls.OUTGOING_TYPE -> out++
-                    CallLog.Calls.MISSED_TYPE -> mis++
-                    CallLog.Calls.REJECTED_TYPE, CallLog.Calls.BLOCKED_TYPE -> blk++
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) {
+        runCatching {
+            context.contentResolver.query(CallLog.Calls.CONTENT_URI, projection, selection, selectionArgs, null)?.use { c ->
+                val typeIdx = c.getColumnIndexOrThrow(CallLog.Calls.TYPE)
+                val durIdx = c.getColumnIndexOrThrow(CallLog.Calls.DURATION)
+                val nameIdx = c.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)
+                val numIdx = c.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
+                
+                while (c.moveToNext()) {
+                    total++
+                    val t = c.getInt(typeIdx)
+                    duration += c.getLong(durIdx)
+                    when (t) {
+                        CallLog.Calls.INCOMING_TYPE -> inc++
+                        CallLog.Calls.OUTGOING_TYPE -> out++
+                        CallLog.Calls.MISSED_TYPE -> mis++
+                        CallLog.Calls.REJECTED_TYPE, CallLog.Calls.BLOCKED_TYPE -> blk++
+                    }
+                    val identifier = c.getString(nameIdx) ?: c.getString(numIdx) ?: "Unknown"
+                    contactCounts[identifier] = (contactCounts[identifier] ?: 0) + 1
                 }
-                val identifier = c.getString(nameIdx) ?: c.getString(numIdx) ?: "Unknown"
-                contactCounts[identifier] = (contactCounts[identifier] ?: 0) + 1
             }
         }
     }

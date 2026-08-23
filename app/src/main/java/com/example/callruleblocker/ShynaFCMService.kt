@@ -17,6 +17,8 @@ import com.example.callruleblocker.call.CallStateController
 import com.example.callruleblocker.call.GlobalCallState
 import com.example.callruleblocker.call.CallSignalingManager
 import com.example.callruleblocker.call.AppCallStatus
+import android.media.RingtoneManager
+import android.media.AudioAttributes
 
 class ShynaFCMService : FirebaseMessagingService() {
     private companion object {
@@ -44,26 +46,44 @@ class ShynaFCMService : FirebaseMessagingService() {
         val callId = data["callId"] ?: return
         val callerName = data["callerName"] ?: "Shyna User"
         val callType = data["callType"] ?: "VOICE"
+        val callerUid = data["callerUid"] ?: ""
 
-        // BUSY LOGIC
-        if (CallStateController.globalState.value == GlobalCallState.ACTIVE) {
-            Log.d(TAG, "User Busy: Auto-rejecting FCM call.")
-            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
-            return
+        val receiverUid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+
+        // BLOCK CHECK
+        if (callerUid.isNotEmpty()) {
+            FirebaseFirestore.getInstance().collection("users").document(receiverUid).collection("blockedUsers").document(callerUid)
+                .get().addOnSuccessListener { d ->
+                    if (d.exists()) {
+                        Log.d(TAG, "Caller is blocked. Rejecting call.")
+                        CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+                    } else {
+                        // BUSY LOGIC
+                        if (CallStateController.globalState.value == GlobalCallState.ACTIVE) {
+                            Log.d(TAG, "User Busy: Auto-rejecting FCM call.")
+                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+                            return@addOnSuccessListener
+                        }
+                        showCallNotification(callId, callerName, callType)
+                    }
+                }
+        } else {
+            showCallNotification(callId, callerName, callType)
         }
-
-        showCallNotification(callId, callerName, callType)
     }
 
     private fun showCallNotification(callId: String, callerName: String, callType: String) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "App Calls", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Incoming app-to-app calls"
-            }
-            notificationManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(CHANNEL_ID, "App Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Incoming app-to-app calls"
+            setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build(),
+            )
+            enableVibration(true)
         }
+        notificationManager.createNotificationChannel(channel)
 
         val intent = Intent(this, AppCallActivity::class.java).apply {
             putExtra("callId", callId)
@@ -94,8 +114,10 @@ class ShynaFCMService : FirebaseMessagingService() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Incoming $callType Call")
             .setContentText(callerName)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+            .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
             .setFullScreenIntent(pendingIntent, true)
             .addAction(android.R.drawable.ic_menu_call, "Accept", acceptPending)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePending)

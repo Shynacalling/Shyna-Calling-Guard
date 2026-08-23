@@ -50,6 +50,7 @@
         <activity
             android:name="com.example.callruleblocker.MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.CallRuleBlocker">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -66,6 +67,7 @@
         <activity
             android:name="com.example.callruleblocker.DialerActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.CallRuleBlocker">
             <intent-filter>
                 <action android:name="android.intent.action.DIAL" />
@@ -89,6 +91,7 @@
         <activity
             android:name="com.example.callruleblocker.VoiceCallActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.CallRuleBlocker">
             <intent-filter>
                 <action android:name="android.intent.action.CALL" />
@@ -121,6 +124,7 @@
             android:excludeFromRecents="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.CallRuleBlocker" />
 
         <activity
@@ -129,6 +133,7 @@
             android:launchMode="singleTask"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:theme="@style/Theme.CallRuleBlocker" />
 
         <service
@@ -157,6 +162,15 @@
                 android:value="true" />
             <intent-filter>
                 <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name="com.example.callruleblocker.CallScreeningServiceImpl"
+            android:permission="android.permission.BIND_CALL_SCREENING_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
             </intent-filter>
         </service>
 

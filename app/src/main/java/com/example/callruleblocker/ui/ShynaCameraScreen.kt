@@ -62,7 +62,8 @@ private const val TAG = "ShynaCamera"
 @Composable
 fun ShynaCameraScreen(
     onBack: () -> Unit,
-    onMediaCaptured: (Uri, Boolean) -> Unit // Boolean: true if video, false if photo
+    onMediaCaptured: (Uri, Boolean) -> Unit,
+    startVideoImmediately: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -86,7 +87,7 @@ fun ShynaCameraScreen(
     }
 
     if (hasCameraPermission) {
-        CameraContent(onBack, onMediaCaptured)
+        CameraContent(onBack, onMediaCaptured, startVideoImmediately)
     } else {
         Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
             Text("Camera permission required", color = Color.White)
@@ -97,7 +98,8 @@ fun ShynaCameraScreen(
 @Composable
 private fun CameraContent(
     onBack: () -> Unit,
-    onMediaCaptured: (Uri, Boolean) -> Unit
+    onMediaCaptured: (Uri, Boolean) -> Unit,
+    startVideoImmediately: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -123,6 +125,8 @@ private fun CameraContent(
     var isRecordingVideo by remember { mutableStateOf(false) }
     var recordingDuration by remember { mutableStateOf(0L) }
 
+    var cameraReady by remember { mutableStateOf(false) }
+
     LaunchedEffect(lensFacing) {
         val cameraProviderProvider = ProcessCameraProvider.getInstance(context)
         val cameraProvider = cameraProviderProvider.get()
@@ -144,8 +148,18 @@ private fun CameraContent(
                 imageCapture,
                 videoCapture
             )
+            cameraReady = true
         } catch (exc: Exception) {
             Log.e(TAG, "Use case binding failed", exc)
+        }
+    }
+
+    LaunchedEffect(cameraReady) {
+        if (cameraReady && startVideoImmediately && !isRecordingVideo) {
+            isRecordingVideo = true
+            recording = startRecording(context, videoCapture, cameraExecutor) { uri ->
+                onMediaCaptured(uri, true)
+            }
         }
     }
 
@@ -173,12 +187,12 @@ private fun CameraContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(28.dp))
+                Icon(Icons.Outlined.Close, null, tint = Color.White, modifier = Modifier.size(28.dp))
             }
             
             IconButton(onClick = { flashEnabled = !flashEnabled }) {
                 Icon(
-                    if (flashEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                    if (flashEnabled) Icons.Outlined.FlashOn else Icons.Outlined.FlashOff,
                     null, tint = Color.White
                 )
             }
@@ -208,7 +222,7 @@ private fun CameraContent(
             ) {
                 // Gallery Shortcut (Placeholder)
                 Box(Modifier.size(48.dp).clip(CircleShape).background(Color.White.copy(0.2f))) {
-                    Icon(Icons.Default.PhotoLibrary, null, tint = Color.White, modifier = Modifier.align(Alignment.Center))
+                    Icon(Icons.Outlined.PhotoLibrary, null, tint = Color.White, modifier = Modifier.align(Alignment.Center))
                 }
 
                 // Capture Button
@@ -272,7 +286,7 @@ private fun CameraContent(
                     },
                     modifier = Modifier.background(Color.White.copy(0.2f), CircleShape)
                 ) {
-                    Icon(Icons.Default.FlipCameraAndroid, null, tint = Color.White)
+                    Icon(Icons.Outlined.FlipCameraAndroid, null, tint = Color.White)
                 }
             }
             

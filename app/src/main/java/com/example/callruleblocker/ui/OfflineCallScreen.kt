@@ -176,40 +176,56 @@ private fun ActiveUsersScreen(transport: String, users: List<OfflineUser>, onUse
 
     LaunchedEffect(Unit) {
         // Discovery effect
-        delay(2000)
+        delay(3000)
         isScanning = false
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text(transport, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = ShynaDesign.colors.TextPrimary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(transport, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = ShynaDesign.colors.TextPrimary, modifier = Modifier.weight(1f))
+            if (isScanning) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = ShynaDesign.colors.BrandGreen)
+            }
+        }
         Spacer(Modifier.height(8.dp))
         
-        if (isScanning) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = ShynaDesign.colors.BrandGreen)
-                Spacer(Modifier.width(8.dp))
-                Text("Scanning for SHYNA users...", fontSize = 14.sp, color = Color.Gray)
-            }
-        } else {
-            Text("${filtered.size} SHYNA users found nearby", fontSize = 14.sp, color = ShynaDesign.colors.BrandGreen)
-        }
+        Text(
+            if (isScanning) "Searching for nearby SHYNA users..." else "${filtered.size} users found via $transport", 
+            fontSize = 14.sp, 
+            color = if(isScanning) Color.Gray else ShynaDesign.colors.BrandGreen
+        )
 
         Spacer(Modifier.height(20.dp))
 
         OutlinedTextField(
             value = search, onValueChange = { search = it },
-            placeholder = { Text("Search name or Shyna ID", fontSize = 15.sp) },
+            placeholder = { Text("Search name or Shyna ID", fontSize = 15.sp, color = ShynaDesign.colors.TextSecondary) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             leadingIcon = { Icon(Icons.Default.Search, null, tint = Color.Gray) },
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ShynaDesign.colors.BrandGreen)
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = ShynaDesign.colors.BrandGreen,
+                unfocusedBorderColor = ShynaDesign.colors.DividerColor,
+                focusedTextColor = ShynaDesign.colors.TextPrimary,
+                unfocusedTextColor = ShynaDesign.colors.TextPrimary
+            )
         )
         Spacer(Modifier.height(24.dp))
         Text("Active Users", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, fontSize = 18.sp)
         Spacer(Modifier.height(12.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(filtered, key = { it.id }) { user ->
-                OfflineUserRow(user) { onUserSelect(user) }
+        
+        if (!isScanning && filtered.isEmpty()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.Radar, null, modifier = Modifier.size(64.dp), tint = Color.Gray.copy(0.3f))
+                    Text("No users found nearby", color = Color.Gray)
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                items(filtered, key = { it.id }) { user ->
+                    OfflineUserRow(user) { onUserSelect(user) }
+                }
             }
         }
     }

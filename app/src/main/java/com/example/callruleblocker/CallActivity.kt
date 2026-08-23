@@ -1362,10 +1362,12 @@ private fun MultiCallBanner(heldCall: Call, onSwap: (Call) -> Unit) {
     val context = LocalContext.current
     var name by remember(number) { mutableStateOf<String?>(null) }
     LaunchedEffect(number) {
-        if (number.isNotBlank()) {
+        if (number.isNotBlank() && ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
             val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number))
-            context.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use {
-                if (it.moveToFirst()) name = it.getString(0)
+            runCatching {
+                context.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) name = it.getString(0)
+                }
             }
         }
     }

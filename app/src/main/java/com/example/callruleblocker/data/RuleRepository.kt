@@ -1,7 +1,10 @@
 package com.example.callruleblocker.data
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.ContactsContract
+import androidx.core.content.ContextCompat
 
 class RuleRepository(private val context: Context) {
 
@@ -71,6 +74,7 @@ class RuleRepository(private val context: Context) {
         a.filter { it.isDigit() }.takeLast(10) == b.filter { it.isDigit() }.takeLast(10)
 
     private fun findContactId(number: String): Long? = runCatching {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
         val uri = ContactsContract.PhoneLookup.CONTENT_FILTER_URI
             .buildUpon().appendPath(number).build()
         context.contentResolver.query(
@@ -87,6 +91,7 @@ class RuleRepository(private val context: Context) {
      * Optimized to use fewer queries.
      */
     private fun isInFamilyGroup(contactId: Long): Boolean = runCatching {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return false
         val familyGroupIds = context.contentResolver.query(
             ContactsContract.Groups.CONTENT_URI,
             arrayOf(ContactsContract.Groups._ID),

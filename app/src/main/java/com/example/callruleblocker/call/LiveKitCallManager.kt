@@ -89,11 +89,6 @@ class LiveKitCallManager(private val context: Context) {
             val r = LiveKit.create(context)
             r.connect(LiveKitConfig.URL, token)
             room = r
-            
-            // Enable audio/video by default
-            r.localParticipant.setMicrophoneEnabled(true)
-            r.localParticipant.setCameraEnabled(true)
-            
             return r
         } catch (e: Exception) {
             println("LiveKit: Connection failure: ${e.message}")
@@ -120,6 +115,7 @@ class LiveKitCallManager(private val context: Context) {
         val json = JsonObject().apply {
             addProperty("callId", call.id)
             addProperty("receiverUid", call.receiverUid)
+            addProperty("callerUid", call.callerUid)
             addProperty("callerName", call.callerName)
             addProperty("callType", call.type.name)
         }

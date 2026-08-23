@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.ContentValues
 import android.content.ContentProviderOperation
 import android.content.Intent
+import android.util.Log
 import android.speech.RecognizerIntent
 import android.database.ContentObserver
 import android.graphics.BitmapFactory
@@ -109,7 +110,7 @@ import java.io.File
 import kotlin.math.abs
 
 private enum class PhoneTab { KEYPAD, RECENTS, CONTACTS }
-private enum class CallTypeFilter { ALL, MISSED, REJECTED, OUTGOING, INCOMING, BLOCKED }
+private enum class CallTypeFilter { ALL, MISSED, REJECTED, OUTGOING, INCOMING, BLOCKED, AUTO_BLOCKED }
 
 data class RecentCall(
     val id: Long = 0L,
@@ -211,11 +212,20 @@ fun PhoneHomeScreen(
     FastContactsObserver { contactsRevision++ }
 
     DisposableEffect(context) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) {
+            return@DisposableEffect onDispose {}
+        }
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) { missedPopupRevision++ }
         }
-        context.contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer)
-        onDispose { context.contentResolver.unregisterContentObserver(observer) }
+        try {
+            context.contentResolver.registerContentObserver(CallLog.Calls.CONTENT_URI, true, observer)
+        } catch (e: SecurityException) {
+            Log.e("PhoneHome", "Failed to register CallLog observer", e)
+        }
+        onDispose { 
+            runCatching { context.contentResolver.unregisterContentObserver(observer) }
+        }
     }
 
     LaunchedEffect(missedPopupRevision, selectedTab) {
@@ -1670,12 +1680,13 @@ private fun RecentsScreen(query: String, contactsRevision: Int, filterRequest: I
         calls.filter { call ->
             val queryMatch = query.isBlank() || call.number.contains(query, true) || call.name.orEmpty().contains(query, true)
             val typeMatch = when (callTypeFilter) {
-                CallTypeFilter.ALL -> call.type != CallLog.Calls.BLOCKED_TYPE
+                CallTypeFilter.ALL -> call.type != 99 && call.type != CallLog.Calls.BLOCKED_TYPE
                 CallTypeFilter.MISSED -> call.type == CallLog.Calls.MISSED_TYPE
                 CallTypeFilter.REJECTED -> call.type == CallLog.Calls.REJECTED_TYPE
                 CallTypeFilter.OUTGOING -> call.type == CallLog.Calls.OUTGOING_TYPE
                 CallTypeFilter.INCOMING -> call.type == CallLog.Calls.INCOMING_TYPE
                 CallTypeFilter.BLOCKED -> call.type == CallLog.Calls.BLOCKED_TYPE
+                CallTypeFilter.AUTO_BLOCKED -> call.type == 99
             }
             val simMatch = simFilter == "ALL" || simFilter == simLabel(call.simSlotIndex)
             queryMatch && typeMatch && simMatch
@@ -2069,7 +2080,15 @@ private fun RecentsFilterDialog(simFilter: String, callTypeFilter: CallTypeFilte
                 }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp.scaled()))
                 Text("Call type", style = MaterialTheme.typography.labelLarge)
-                listOf(CallTypeFilter.ALL to "All calls", CallTypeFilter.MISSED to "Missed calls", CallTypeFilter.REJECTED to "Rejected calls", CallTypeFilter.OUTGOING to "Outgoing calls", CallTypeFilter.INCOMING to "Incoming calls", CallTypeFilter.BLOCKED to "Blocked calls").forEach { (value, label) ->
+                listOf(
+                    CallTypeFilter.ALL to "All calls", 
+                    CallTypeFilter.MISSED to "Missed calls", 
+                    CallTypeFilter.REJECTED to "Rejected calls", 
+                    CallTypeFilter.OUTGOING to "Outgoing calls", 
+                    CallTypeFilter.INCOMING to "Incoming calls", 
+                    CallTypeFilter.BLOCKED to "Blocked calls",
+                    CallTypeFilter.AUTO_BLOCKED to "Auto Blocked"
+                ).forEach { (value, label) ->
                     Row(Modifier.fillMaxWidth().clickable { localType = value }.padding(vertical = 8.dp.scaled()), verticalAlignment = Alignment.CenterVertically) {
                         Icon(if (localType == value) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked, null, tint = if (localType == value) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(12.dp.scaled())); Text(label, fontSize = 16.sp.scaled())
@@ -2366,30 +2385,52 @@ private fun detailDayLabel(time: Long): String {
 }
 private fun favouriteNumberSet(ctx: Context): Set<String> {
     val res = ctx.getSharedPreferences("favourite_numbers", Context.MODE_PRIVATE).getStringSet("numbers", emptySet()).orEmpty().toMutableSet()
-    runCatching { ctx.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER), "${ContactsContract.CommonDataKinds.Phone.STARRED}=1", null, null)?.use { while (it.moveToNext()) normalizePhone(it.getString(0).orEmpty()).takeIf { n -> n.isNotBlank() }?.let(res::add) } }
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+        runCatching { ctx.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER), "${ContactsContract.CommonDataKinds.Phone.STARRED}=1", null, null)?.use { while (it.moveToNext()) normalizePhone(it.getString(0).orEmpty()).takeIf { n -> n.isNotBlank() }?.let(res::add) } }
+    }
     return res
 }
 private fun isFavouriteNumber(ctx: Context, num: String): Boolean = normalizePhone(num) in favouriteNumberSet(ctx)
 private fun setFavouriteNumber(ctx: Context, num: String, fav: Boolean): Boolean {
     val key = normalizePhone(num); if (key.isBlank()) return false; val local = ctx.getSharedPreferences("favourite_numbers", Context.MODE_PRIVATE).getStringSet("numbers", emptySet()).orEmpty().toMutableSet()
     if (fav) local.add(key) else local.remove(key); val saved = ctx.getSharedPreferences("favourite_numbers", Context.MODE_PRIVATE).edit().putStringSet("numbers", HashSet(local)).commit()
-    val id = findContactIdByNumber(ctx, num); if (id != null) runCatching { val v = ContentValues().apply { put(ContactsContract.Contacts.STARRED, if (fav) 1 else 0) }; ctx.contentResolver.update(Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_URI, id.toString()), v, null, null) }
+    val id = findContactIdByNumber(ctx, num); if (id != null && ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+        runCatching { val v = ContentValues().apply { put(ContactsContract.Contacts.STARRED, if (fav) 1 else 0) }; ctx.contentResolver.update(Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_URI, id.toString()), v, null, null) }
+    }
     return saved
 }
 private fun shareNumber(ctx: Context, t: String, n: String) { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "$t\n$n") }, "Share")) }
 private fun deleteCallHistory(ctx: Context, num: String): Int {
     val d = normalizePhone(num); if (d.isBlank()) return 0; var del = 0; val ids = mutableListOf<Long>(); val snaps = mutableListOf<TrashedCallEntry>()
-    ctx.contentResolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID, CallLog.Calls.FEATURES), null, null, null)?.use { c ->
-        while (c.moveToNext()) { val sn = c.getString(1).orEmpty(); if (normalizePhone(sn) == d) { ids += c.getLong(0); snaps += TrashedCallEntry(sn, c.getString(2), c.getInt(3), c.getLong(4), c.getLong(5), c.getString(6), c.getInt(7)) } }
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) {
+        ctx.contentResolver.query(CallLog.Calls.CONTENT_URI, arrayOf(CallLog.Calls._ID, CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME, CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION, CallLog.Calls.PHONE_ACCOUNT_ID, CallLog.Calls.FEATURES), null, null, null)?.use { c ->
+            while (c.moveToNext()) { val sn = c.getString(1).orEmpty(); if (normalizePhone(sn) == d) { ids += c.getLong(0); snaps += TrashedCallEntry(sn, c.getString(2), c.getInt(3), c.getLong(4), c.getLong(5), c.getString(6), c.getInt(7)) } }
+        }
     }
-    ids.forEach { del += ctx.contentResolver.delete(Uri.withAppendedPath(CallLog.Calls.CONTENT_URI, it.toString()), null, null) }
+    if (ids.isNotEmpty() && ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_CALL_LOG) == PackageManager.PERMISSION_GRANTED) {
+        ids.forEach { del += ctx.contentResolver.delete(Uri.withAppendedPath(CallLog.Calls.CONTENT_URI, it.toString()), null, null) }
+    }
     if (del > 0) CallLogTrashStore(ctx.applicationContext).add(num, snaps.take(del))
     return del
 }
-private fun callTypeLabel(t: Int): String = when (t) { CallLog.Calls.INCOMING_TYPE -> "Incoming"; CallLog.Calls.OUTGOING_TYPE -> "Outgoing"; CallLog.Calls.MISSED_TYPE -> "Missed"; CallLog.Calls.REJECTED_TYPE -> "Rejected"; CallLog.Calls.BLOCKED_TYPE -> "Blocked"; else -> "Call" }
+private fun callTypeLabel(t: Int): String = when (t) { 
+    CallLog.Calls.INCOMING_TYPE -> "Incoming"
+    CallLog.Calls.OUTGOING_TYPE -> "Outgoing"
+    CallLog.Calls.MISSED_TYPE -> "Missed"
+    CallLog.Calls.REJECTED_TYPE -> "Rejected"
+    CallLog.Calls.BLOCKED_TYPE -> "Blocked"
+    99 -> "Auto Blocked"
+    else -> "Call" 
+}
 private fun launchContactDuplicateManager(ctx: Context) { val intents = listOf(Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI), Intent("com.samsung.android.contacts.action.MERGE_DUPLICATE_CONTACTS")); intents.any { i -> if (i.resolveActivity(ctx.packageManager) != null) { runCatching { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess } else false } }
-private fun findContactIdByNumber(ctx: Context, num: String): Long? { val n = normalizePhone(num); if (n.isBlank()) return null; return runCatching { ctx.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, arrayOf(ContactsContract.CommonDataKinds.Phone.CONTACT_ID, ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null)?.use { while (it.moveToNext()) if (normalizePhone(it.getString(1).orEmpty()) == n) return@use it.getLong(0); null } }.getOrNull() }
+private fun findContactIdByNumber(ctx: Context, num: String): Long? { 
+    val n = normalizePhone(num); if (n.isBlank()) return null; 
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return null
+    return runCatching { ctx.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, arrayOf(ContactsContract.CommonDataKinds.Phone.CONTACT_ID, ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null)?.use { while (it.moveToNext()) if (normalizePhone(it.getString(1).orEmpty()) == n) return@use it.getLong(0); null } }.getOrNull() 
+}
 private fun mergeDuplicateContactGroups(ctx: Context, groups: List<List<PhoneContact>>): Int {
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED || 
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) return 0
     var mg = 0; groups.forEach { group -> val ids = group.map { c -> c.id }.distinct(); if (ids.size < 2) return@forEach; val rids = mutableListOf<Long>(); ctx.contentResolver.query(ContactsContract.RawContacts.CONTENT_URI, arrayOf(ContactsContract.RawContacts._ID), ContactsContract.RawContacts.CONTACT_ID + " IN (" + ids.joinToString(",") { "?" } + ")", ids.map(Long::toString).toTypedArray(), null)?.use { c -> while (c.moveToNext()) rids += c.getLong(0) }; val base = rids.firstOrNull() ?: return@forEach; val ops = ArrayList<ContentProviderOperation>(); rids.drop(1).forEach { o -> ops += ContentProviderOperation.newUpdate(ContactsContract.AggregationExceptions.CONTENT_URI).withValue(ContactsContract.AggregationExceptions.TYPE, ContactsContract.AggregationExceptions.TYPE_KEEP_TOGETHER).withValue(ContactsContract.AggregationExceptions.RAW_CONTACT_ID1, base).withValue(ContactsContract.AggregationExceptions.RAW_CONTACT_ID2, o).build() }; if (ops.isNotEmpty()) { ctx.contentResolver.applyBatch(ContactsContract.AUTHORITY, ops); mg++ } }
     return mg
 }
@@ -2431,42 +2472,51 @@ private fun ContactAvatar(text: String, photoUri: String? = null) {
 }
 @Composable
 private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) { Column(Modifier.fillMaxWidth().padding(48.dp.scaled()), horizontalAlignment = Alignment.CenterHorizontally) { Icon(icon, null, Modifier.size(52.dp.scaled()), tint = Color(0xFFA59DB0)); Spacer(Modifier.height(12.dp.scaled())); Text(text, color = Color(0xFFA59DB0), textAlign = TextAlign.Center, fontSize = 16.sp.scaled()) } }
-private fun openNewContact(ctx: Context, n: String) { runCatching { ctx.startActivity(Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).apply { if (n.isNotBlank()) putExtra(ContactsContract.Intents.Insert.PHONE, n) }) } }
+private fun openNewContact(ctx: Context, n: String) { 
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        Toast.makeText(ctx, "Contacts permission required", Toast.LENGTH_SHORT).show()
+        return
+    }
+    runCatching { ctx.startActivity(Intent(Intent.ACTION_INSERT, ContactsContract.Contacts.CONTENT_URI).apply { if (n.isNotBlank()) putExtra(ContactsContract.Intents.Insert.PHONE, n) }) } 
+}
 private fun openContact(ctx: Context, id: Long) { runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_URI, id.toString()))) } }
 private val contactInfoCache = mutableMapOf<String, Pair<String?, String?>>()
 
 private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContext(Dispatchers.IO) {
     val result = mutableListOf<RecentCall>()
-    val bs = BlockedCallStore(ctx)
-    val rr = RuleRepository(ctx)
-    val pbn = rr.blockedSpecificNumbers()
-    
-    val subs = if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
-        try { ctx.getSystemService(SubscriptionManager::class.java)?.activeSubscriptionInfoList.orEmpty() } catch (_: Exception) { emptyList() }
-    } else emptyList()
-    val tm = ctx.getSystemService(TelecomManager::class.java)
-    val ta = try { tm?.callCapablePhoneAccounts.orEmpty() } catch (_: Exception) { emptyList() }
+    try {
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALL_LOG) != PackageManager.PERMISSION_GRANTED) return@withContext emptyList()
+        
+        val bs = BlockedCallStore(ctx)
+        val rr = RuleRepository(ctx)
+        val pbn = rr.blockedSpecificNumbers()
+        
+        val subs = if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+            try { ctx.getSystemService(SubscriptionManager::class.java)?.activeSubscriptionInfoList.orEmpty() } catch (_: Exception) { emptyList() }
+        } else emptyList()
+        val tm = ctx.getSystemService(TelecomManager::class.java)
+        val ta = try { tm?.callCapablePhoneAccounts.orEmpty() } catch (_: Exception) { emptyList() }
 
-    if (contactInfoCache.isEmpty()) {
-        val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
-        val projection = arrayOf(
-            ContactsContract.CommonDataKinds.Phone.NUMBER, 
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, 
-            ContactsContract.CommonDataKinds.Phone.PHOTO_URI
-        )
-        ctx.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-            val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-            val photoIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_URI)
-            while (cursor.moveToNext()) {
-                val rawNum = cursor.getString(numIdx).orEmpty()
-                val num = normalizePhone(rawNum)
-                if (num.isNotBlank()) {
-                    contactInfoCache[num] = cursor.getString(nameIdx) to cursor.getString(photoIdx)
+        if (contactInfoCache.isEmpty() && ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
+            val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.NUMBER, 
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, 
+                ContactsContract.CommonDataKinds.Phone.PHOTO_URI
+            )
+            ctx.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val photoIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.PHOTO_URI)
+                while (cursor.moveToNext()) {
+                    val rawNum = cursor.getString(numIdx).orEmpty()
+                    val num = normalizePhone(rawNum)
+                    if (num.isNotBlank()) {
+                        contactInfoCache[num] = cursor.getString(nameIdx) to cursor.getString(photoIdx)
+                    }
                 }
             }
         }
-    }
 
     val proj = arrayOf(
         CallLog.Calls._ID, 
@@ -2480,14 +2530,14 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
     )
     
     ctx.contentResolver.query(CallLog.Calls.CONTENT_URI, proj, null, null, "${CallLog.Calls.DATE} DESC")?.use { c ->
-        val idIdx = c.getColumnIndex(CallLog.Calls._ID)
-        val numIdx = c.getColumnIndex(CallLog.Calls.NUMBER)
-        val nameIdx = c.getColumnIndex(CallLog.Calls.CACHED_NAME)
-        val typeIdx = c.getColumnIndex(CallLog.Calls.TYPE)
-        val dateIdx = c.getColumnIndex(CallLog.Calls.DATE)
-        val durIdx = c.getColumnIndex(CallLog.Calls.DURATION)
-        val aidIdx = c.getColumnIndex(CallLog.Calls.PHONE_ACCOUNT_ID)
-        val featIdx = c.getColumnIndex(CallLog.Calls.FEATURES)
+        val idIdx = c.getColumnIndexOrThrow(CallLog.Calls._ID)
+        val numIdx = c.getColumnIndexOrThrow(CallLog.Calls.NUMBER)
+        val nameIdx = c.getColumnIndexOrThrow(CallLog.Calls.CACHED_NAME)
+        val typeIdx = c.getColumnIndexOrThrow(CallLog.Calls.TYPE)
+        val dateIdx = c.getColumnIndexOrThrow(CallLog.Calls.DATE)
+        val durIdx = c.getColumnIndexOrThrow(CallLog.Calls.DURATION)
+        val aidIdx = c.getColumnIndexOrThrow(CallLog.Calls.PHONE_ACCOUNT_ID)
+        val featIdx = c.getColumnIndexOrThrow(CallLog.Calls.FEATURES)
 
         while (c.moveToNext() && result.size < 400) {
             val rn = c.getString(numIdx).orEmpty()
@@ -2496,14 +2546,24 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
             val norm = normalizePhone(rn)
             
             val be = bs.find(rn, cd)
-            if (norm.isNotBlank() && (norm in pbn || be != null)) continue
-            
             val ci = contactInfoCache[norm]
+            val isContact = ci != null
+            val isRuleBlocked = norm.isNotBlank() && norm in pbn
+
+            // LOGIC: Blocked calls are only shown in "ALL" if they are now contacts.
+            // Otherwise they go into the "AUTO_BLOCKED" filter only.
+            
+            val finalType = when {
+                be != null -> 99 
+                isRuleBlocked -> 99
+                else -> c.getInt(typeIdx)
+            }
+
             result += RecentCall(
                 id = c.getLong(idIdx),
                 number = rn,
                 name = ci?.first ?: c.getString(nameIdx),
-                type = if (be != null) CallLog.Calls.BLOCKED_TYPE else c.getInt(typeIdx),
+                type = if (finalType == 99 && isContact) CallLog.Calls.MISSED_TYPE else finalType,
                 date = cd,
                 durationSeconds = c.getLong(durIdx),
                 phoneAccountId = aid,
@@ -2513,7 +2573,39 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
             )
         }
     }
-    result
+
+    // --- PHASE 2: MERGE SYSTEM LOG WITH LOCAL BLOCKED STORE ---
+    val auditEntries = bs.getAll()
+    auditEntries.forEach { entry ->
+        val norm = normalizePhone(entry.number)
+        val ci = contactInfoCache[norm]
+        val isContact = ci != null
+        
+        // If this exact blocked call isn't already in our result list (within 10s tolerance)
+        val alreadyInList = result.any { normalizePhone(it.number) == norm && abs(it.date - entry.time) < 10000 }
+        
+        if (!alreadyInList) {
+            result.add(RecentCall(
+                id = -entry.time, // Negative ID for local-only entries
+                number = entry.number,
+                name = ci?.first,
+                type = if (isContact) CallLog.Calls.MISSED_TYPE else 99,
+                date = entry.time,
+                durationSeconds = 0,
+                phoneAccountId = null,
+                simSlotIndex = entry.simSlot,
+                photoUri = ci?.second
+            ))
+        }
+    }
+
+    result.sortByDescending { it.date }
+    result.take(400)
+    } catch (e: Exception) {
+        android.util.Log.e("PhoneHome", "Recent calls merge failed", e)
+    }
+    result.sortByDescending { it.date }
+    result.take(400)
 }
 private fun resolveSimSlotFaster(aid: String?, subs: List<android.telephony.SubscriptionInfo>, tm: TelecomManager?, ta: List<android.telecom.PhoneAccountHandle>): Int {
     if (aid.isNullOrBlank()) return 0; aid.toIntOrNull()?.let { v -> subs.firstOrNull { it.subscriptionId == v }?.let { return it.simSlotIndex.coerceAtLeast(0) } }; subs.firstOrNull { (!it.iccId.isNullOrBlank() && aid.contains(it.iccId, true)) || aid.contains(it.subscriptionId.toString()) }?.let { return it.simSlotIndex.coerceAtLeast(0) }
@@ -2522,9 +2614,25 @@ private fun resolveSimSlotFaster(aid: String?, subs: List<android.telephony.Subs
 @Composable
 private fun FastContactsObserver(onChanged: () -> Unit) {
     val ctx = LocalContext.current; val curr by rememberUpdatedState(onChanged)
-    DisposableEffect(ctx) { val h = Handler(Looper.getMainLooper()); val r = Runnable { curr() }; val o = object : ContentObserver(h) { override fun onChange(s: Boolean) { h.removeCallbacks(r); h.post(r); h.postDelayed(r, 450L) } }; ctx.contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, o); onDispose { h.removeCallbacks(r); ctx.contentResolver.unregisterContentObserver(o) } }
+    DisposableEffect(ctx) { 
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return@DisposableEffect onDispose {}
+        }
+        val h = Handler(Looper.getMainLooper()); val r = Runnable { curr() }; val o = object : ContentObserver(h) { override fun onChange(s: Boolean) { h.removeCallbacks(r); h.post(r); h.postDelayed(r, 450L) } }; 
+        try {
+            ctx.contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, o)
+        } catch (e: SecurityException) {
+            Log.e("PhoneHome", "Failed to register contacts observer", e)
+        }
+        onDispose { 
+            h.removeCallbacks(r)
+            runCatching { ctx.contentResolver.unregisterContentObserver(o) }
+        } 
+    }
 }
 private suspend fun loadContacts(ctx: Context): List<PhoneContact> = withContext(Dispatchers.IO) {
+    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return@withContext emptyList()
+    
     val accountTypes = mutableMapOf<Long, String?>()
     ctx.contentResolver.query(
         ContactsContract.RawContacts.CONTENT_URI, 

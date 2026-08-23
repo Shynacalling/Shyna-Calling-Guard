@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.core.content.ContextCompat
+import android.content.ContextWrapper
 
 @Composable
 fun AppLockScreen(
@@ -43,8 +44,11 @@ fun AppLockScreen(
 
     LaunchedEffect(biometricEnabled) {
         if (biometricEnabled) {
-            showBiometricPrompt(context as FragmentActivity) {
-                onUnlocked()
+            val activity = context.findFragmentActivity()
+            if (activity != null) {
+                showBiometricPrompt(activity) {
+                    onUnlocked()
+                }
             }
         }
     }
@@ -125,7 +129,10 @@ fun AppLockScreen(
                     // Biometric icon
                     Box(Modifier.size(72.dp), contentAlignment = Alignment.Center) {
                         if (biometricEnabled) {
-                            IconButton(onClick = { showBiometricPrompt(context as FragmentActivity) { onUnlocked() } }) {
+                            IconButton(onClick = { 
+                                val activity = context.findFragmentActivity()
+                                if (activity != null) showBiometricPrompt(activity) { onUnlocked() }
+                            }) {
                                 Icon(Icons.Outlined.Fingerprint, null, tint = Color.White, modifier = Modifier.size(32.dp))
                             }
                         }
@@ -191,4 +198,13 @@ private fun showBiometricPrompt(activity: FragmentActivity, onSuccess: () -> Uni
         .build()
 
     biometricPrompt.authenticate(promptInfo)
+}
+
+private fun Context.findFragmentActivity(): FragmentActivity? {
+    var context = this
+    while (context is ContextWrapper) {
+        if (context is FragmentActivity) return context
+        context = context.baseContext
+    }
+    return null
 }

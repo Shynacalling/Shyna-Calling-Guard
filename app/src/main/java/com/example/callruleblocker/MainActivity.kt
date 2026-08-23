@@ -4,12 +4,11 @@ import android.content.Intent
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -21,26 +20,52 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.example.callruleblocker.ui.SmartCommunicationScreen
+import com.example.callruleblocker.ui.AppLockScreen
+import com.example.callruleblocker.ui.PhoneHomeScreen
+import com.example.callruleblocker.ui.RuleListScreen
+import com.example.callruleblocker.ui.AddRuleScreen
+import com.example.callruleblocker.ui.RecordingSettingsScreen
+import com.example.callruleblocker.ui.ContactCsvScreen
+import com.example.callruleblocker.ui.FeatureHubScreen
+import com.example.callruleblocker.ui.RingtoneSettingsScreen
+import com.example.callruleblocker.ui.NotificationSettingsScreen
+import com.example.callruleblocker.ui.SupplementaryServicesScreen
+import com.example.callruleblocker.ui.ReportGeneratorScreen
+import com.example.callruleblocker.ui.OfflineCallScreen
+import com.example.callruleblocker.ui.CallRecordingsScreen
+import com.example.callruleblocker.ui.RecycleBinScreen
+import com.example.callruleblocker.ui.PermissionGateScreen
+import com.example.callruleblocker.ui.hasAllRequiredPermissions
 import com.example.callruleblocker.data.RuleRepository
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.compose.BackHandler
 import com.example.callruleblocker.call.CallStateController
 import com.example.callruleblocker.call.MainCallType
 import com.example.callruleblocker.call.GlobalCallState
+import com.example.callruleblocker.data.DiscoveryWorker
 import kotlinx.coroutines.launch
+import androidx.work.*
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_START_SEARCH = "start_search"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        val auth = FirebaseAuth.getInstance()
-        val user = auth.currentUser
+        Log.d("ShynaCall", "MainActivity onCreate started")
 
         setContent {
+            val auth = remember { 
+                try { 
+                    FirebaseAuth.getInstance().also { Log.d("ShynaCall", "Auth Instance Created") }
+                } catch(err: Exception) { 
+                    Log.e("ShynaCall", "Auth Init Error", err)
+                    null 
+                } 
+            }
+            val user = remember(auth) { auth?.currentUser }
+
             CallRuleBlockerTheme {
                 val context = LocalContext.current
                 val scope = rememberCoroutineScope()
@@ -68,22 +93,44 @@ class MainActivity : ComponentActivity() {
                             val pinEnabled = prefs.getBoolean("app_lock_pin", false)
                             val biometricEnabled = prefs.getBoolean("app_lock_biometric", false)
                             
+                            Log.d("ShynaCall", "AUTH_CHECK: pin=$pinEnabled bio=$biometricEnabled")
+                            
                             if (pinEnabled || biometricEnabled) {
-                                com.example.callruleblocker.ui.AppLockScreen(
-                                    onUnlocked = { currentScreen = "PHONE_HOME" }
+                                AppLockScreen(
+                                    onUnlocked = { 
+                                        Log.d("ShynaCall", "Unlocked successfully")
+                                        currentScreen = if (hasAllRequiredPermissions(context)) "PHONE_HOME" else "PERMISSIONS"
+                                    }
                                 )
                             } else {
-                                LaunchedEffect(Unit) { currentScreen = "PHONE_HOME" }
+                                LaunchedEffect(Unit) { 
+                                    Log.d("ShynaCall", "No lock, checking permissions")
+                                    currentScreen = if (hasAllRequiredPermissions(context)) "PHONE_HOME" else "PERMISSIONS"
+                                }
                             }
+                        }
+                        "PERMISSIONS" -> {
+                            PermissionGateScreen(
+                                onPermissionsGranted = { 
+                                    Log.d("ShynaCall", "Permissions granted, going HOME")
+                                    currentScreen = "PHONE_HOME" 
+                                }
+                            )
                         }
                         "SHYNA_LINK" -> {
                             SmartCommunicationScreen(
                                 initialOnline = true,
-                                onBack = { currentScreen = "PHONE_HOME" }
+                                onBack = { 
+                                    currentScreen = when(CallStateController.primaryFeature.value) {
+                                        MainCallType.PHONE_DIALER -> "PHONE_HOME"
+                                        MainCallType.SHYNA_LINK -> "SHYNA_LINK"
+                                        MainCallType.OFFLINE_CALL -> "OFFLINE_CALL"
+                                    }
+                                }
                             )
                         }
                         "RULES" -> {
-                            com.example.callruleblocker.ui.RuleListScreen(
+                            RuleListScreen(
                                 rules = rules,
                                 onAddRule = { currentScreen = "ADD_RULE" },
                                 onDeleteRule = { scope.launch { repository.deleteRule(it) } },
@@ -92,13 +139,13 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         "ADD_RULE" -> {
-                            com.example.callruleblocker.ui.AddRuleScreen(
+                            AddRuleScreen(
                                 onSave = { scope.launch { repository.addRule(it) }; currentScreen = "RULES" },
                                 onCancel = { currentScreen = "RULES" }
                             )
                         }
                         "SETTINGS" -> {
-                            com.example.callruleblocker.ui.RecordingSettingsScreen(
+                            RecordingSettingsScreen(
                                 onBack = { currentScreen = "PHONE_HOME" },
                                 onOpenCsv = { currentScreen = "CSV" },
                                 onOpenFeatureHub = { currentScreen = "FEATURE_HUB" },
@@ -111,12 +158,12 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         "CSV" -> {
-                            com.example.callruleblocker.ui.ContactCsvScreen(
+                            ContactCsvScreen(
                                 onBack = { currentScreen = "SETTINGS" }
                             )
                         }
                         "FEATURE_HUB" -> {
-                            com.example.callruleblocker.ui.FeatureHubScreen(
+                            FeatureHubScreen(
                                 onBack = { currentScreen = "SETTINGS" },
                                 onOpenRules = { currentScreen = "RULES" },
                                 onOpenSettings = { currentScreen = "SETTINGS" },
@@ -125,28 +172,28 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         "RINGTONE" -> {
-                            com.example.callruleblocker.ui.RingtoneSettingsScreen(
+                            RingtoneSettingsScreen(
                                 onBack = { currentScreen = "SETTINGS" }
                             )
                         }
                         "NOTIFICATIONS" -> {
-                            com.example.callruleblocker.ui.NotificationSettingsScreen(
+                            NotificationSettingsScreen(
                                 onBack = { currentScreen = "SETTINGS" }
                             )
                         }
                         "SUPPLEMENTARY" -> {
-                            com.example.callruleblocker.ui.SupplementaryServicesScreen(
+                            SupplementaryServicesScreen(
                                 onBack = { currentScreen = "SETTINGS" }
                             )
                         }
                         "REPORT" -> {
-                            com.example.callruleblocker.ui.ReportGeneratorScreen(
+                            ReportGeneratorScreen(
                                 reportType = selectedReportType,
                                 onBack = { currentScreen = "FEATURE_HUB" }
                             )
                         }
                         "PHONE_HOME" -> {
-                            com.example.callruleblocker.ui.PhoneHomeScreen(
+                            PhoneHomeScreen(
                                 onOpenRules = { currentScreen = "RULES" },
                                 onOpenSettings = { currentScreen = "SETTINGS" },
                                 onOpenRecycleBin = { currentScreen = "RECYCLE_BIN" },
@@ -162,8 +209,19 @@ class MainActivity : ComponentActivity() {
                                 onCall = { number, sim -> com.example.callruleblocker.call.SimCallManager.placeCall(context, number, sim) }
                             )
                         }
+                        "RECORDINGS" -> {
+                            CallRecordingsScreen(
+                                onBack = { currentScreen = "PHONE_HOME" }
+                            )
+                        }
+                        "RECYCLE_BIN" -> {
+                            RecycleBinScreen(
+                                repository = repository,
+                                onBack = { currentScreen = "PHONE_HOME" }
+                            )
+                        }
                         "OFFLINE_CALL" -> {
-                            com.example.callruleblocker.ui.OfflineCallScreen(
+                            OfflineCallScreen(
                                 onBack = { 
                                     CallStateController.setPrimaryFeature(MainCallType.PHONE_DIALER)
                                     currentScreen = "PHONE_HOME" 
@@ -181,18 +239,41 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+
+                    // Global feature listener to handle menu switches
+                    LaunchedEffect(primaryFeature) {
+                        val target = when(primaryFeature) {
+                            MainCallType.PHONE_DIALER -> "PHONE_HOME"
+                            MainCallType.SHYNA_LINK -> "SHYNA_LINK"
+                            MainCallType.OFFLINE_CALL -> "OFFLINE_CALL"
+                        }
+                        if (currentScreen != target && currentScreen in setOf("PHONE_HOME", "SHYNA_LINK", "OFFLINE_CALL")) {
+                            currentScreen = target
+                        }
+                    }
                 }
                 
                 // ASYNC LISTENERS & TOKEN SYNC (SAFE WRAPPER)
                 LaunchedEffect(user) {
                     if (user != null) {
+                        // Background Discovery (No UI blocking)
+                        try {
+                            val workRequest = OneTimeWorkRequestBuilder<DiscoveryWorker>()
+                                .setInputData(workDataOf("uid" to user.uid))
+                                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                                .build()
+                            WorkManager.getInstance(context).enqueueUniqueWork("discovery_${user.uid}", ExistingWorkPolicy.KEEP, workRequest)
+                        } catch (e: Exception) {
+                            Log.e("ShynaCall", "WorkManager enqueue failed", e)
+                        }
+
                         // SAVE FCM TOKEN FOR CALL NOTIFICATIONS
                         try {
                             FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
                                 if (task.isSuccessful) {
-                                    val token = task.result
+                                    val fcmToken = task.result
                                     FirebaseFirestore.getInstance().collection("users").document(user.uid)
-                                        .set(mapOf("fcmToken" to token), SetOptions.merge())
+                                        .set(mapOf("fcmToken" to fcmToken), SetOptions.merge())
                                         .addOnSuccessListener { Log.d("ShynaCall", "FCM_TOKEN_SYNCED") }
                                 }
                             }
@@ -227,33 +308,4 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-}
-
-private fun showInternetCallHeadsUp(context: android.content.Context, call: com.example.callruleblocker.call.AppCall) {
-    val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-    val channelId = "shyna_calls"
-    
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-        val channel = android.app.NotificationChannel(channelId, "Incoming Calls", android.app.NotificationManager.IMPORTANCE_HIGH)
-        nm.createNotificationChannel(channel)
-    }
-
-    val intent = android.content.Intent(context, AppCallActivity::class.java).apply {
-        putExtra("callId", call.id)
-        putExtra("isIncoming", true)
-        flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-    }
-    val pendingIntent = android.app.PendingIntent.getActivity(context, 0, intent, android.app.PendingIntent.FLAG_IMMUTABLE)
-
-    val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
-        .setSmallIcon(android.R.drawable.sym_call_incoming)
-        .setContentTitle("Incoming Shyna Call")
-        .setContentText(call.callerName)
-        .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-        .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
-        .setFullScreenIntent(pendingIntent, true)
-        .setAutoCancel(true)
-        .build()
-
-    nm.notify(101, notification)
 }

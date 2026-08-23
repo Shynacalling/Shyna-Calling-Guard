@@ -170,6 +170,9 @@ private fun parseCsvLine(line: String): List<String> {
 }
 
 private suspend fun exportContacts(context: Context, uri: Uri): Int = withContext(Dispatchers.IO) {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        return@withContext 0
+    }
     val rows = mutableListOf<CsvContact>()
     val projection = arrayOf(
         ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
@@ -199,6 +202,7 @@ private suspend fun exportContacts(context: Context, uri: Uri): Int = withContex
 }
 
 private fun lookupEmail(context: Context, contactId: Long): String {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) return ""
     context.contentResolver.query(
         ContactsContract.CommonDataKinds.Email.CONTENT_URI,
         arrayOf(ContactsContract.CommonDataKinds.Email.ADDRESS),
@@ -209,6 +213,9 @@ private fun lookupEmail(context: Context, contactId: Long): String {
 }
 
 private suspend fun importContacts(context: Context, contacts: List<CsvContact>): Pair<Int, Int> = withContext(Dispatchers.IO) {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        return@withContext 0 to contacts.size
+    }
     val existing = existingPhoneSet(context)
     var imported = 0
     var skipped = 0
@@ -248,6 +255,9 @@ private suspend fun importContacts(context: Context, contacts: List<CsvContact>)
 
 private fun existingPhoneSet(context: Context): MutableSet<String> {
     val result = mutableSetOf<String>()
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+        return result
+    }
     context.contentResolver.query(
         ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
         arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null

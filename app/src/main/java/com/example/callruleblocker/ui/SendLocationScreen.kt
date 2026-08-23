@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -44,7 +45,7 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     var comment by remember { mutableStateOf("") }
     var accuracy by remember { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
-    val durations = listOf("15 minutes", "30 minutes", "1 hour", "2 hours", "3 hours", "4 hours", "5 hours", "6 hours", "8 hours", "24 hours")
+    val durations = listOf("15 minutes", "1 hour", "7 hours 30 minutes", "8 hours", "24 hours")
 
     val darkMapStyle = """
         [
@@ -139,9 +140,10 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     """.trimIndent()
 
     val cameraPositionState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(26.8242, 75.6963), 15f)
+        // Default to a broad view (Center of India) instead of a specific city to avoid "wrong state" confusion
+        position = CameraPosition.fromLatLngZoom(LatLng(20.5937, 78.9629), 4f)
     }
-    val markerState = rememberMarkerState(position = LatLng(26.8242, 75.6963))
+    val markerState = rememberMarkerState(position = LatLng(20.5937, 78.9629))
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
         if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true) {
@@ -150,17 +152,39 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     }
 
     fun requestSingleUpdate() {
-        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                .addOnSuccessListener { location ->
-                    location?.let {
-                        val latLng = LatLng(it.latitude, it.longitude)
-                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
+        try {
+            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                // Get Last Location for immediate jump
+                fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                    if (loc != null && accuracy == 0f) {
+                        val latLng = LatLng(loc.latitude, loc.longitude)
+                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 15f)
                         markerState.position = latLng
-                        accuracy = it.accuracy
+                        accuracy = loc.accuracy
                     }
                 }
+                
+                // Then request a fresh high-accuracy one
+                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                    .addOnSuccessListener { location ->
+                        location?.let {
+                            val latLng = LatLng(it.latitude, it.longitude)
+                            cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
+                            markerState.position = latLng
+                            accuracy = it.accuracy
+                        }
+                    }
+                    .addOnFailureListener { e ->
+                        android.util.Log.e("ShynaDiscovery", "Failed to get current location", e)
+                    }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ShynaDiscovery", "Location request exception", e)
         }
+    }
+
+    LaunchedEffect(Unit) {
+        requestSingleUpdate()
     }
 
     DisposableEffect(Unit) {
@@ -179,11 +203,18 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
         }
 
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L)
-                .setMinUpdateIntervalMillis(200L)
-                .setWaitForAccurateLocation(true) // DEEP UNIVERSAL RULE: Wait for high accuracy
+            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                .setMinUpdateIntervalMillis(500L)
+                .setMaxUpdateAgeMillis(5000L) // Allow 5s old data for faster initial fix
+                .setWaitForAccurateLocation(false) // Don't block the first few seconds
                 .build()
-            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, android.os.Looper.getMainLooper())
+            try {
+                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, android.os.Looper.getMainLooper())
+            } catch (e: SecurityException) {
+                android.util.Log.e("ShynaDiscovery", "Location updates security exception", e)
+            } catch (e: Exception) {
+                android.util.Log.e("ShynaDiscovery", "Location updates exception", e)
+            }
         } else {
             locationPermissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
         }
@@ -233,15 +264,17 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = cameraPositionState,
                     properties = MapProperties(
-                        mapStyleOptions = MapStyleOptions(darkMapStyle)
+                        mapStyleOptions = MapStyleOptions(darkMapStyle),
+                        isMyLocationEnabled = true
                     ),
                     uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false)
                 ) {
-                    if (isLiveMode) {
+                    // Marker for selection or static point
+                    if (!isLiveMode) {
                         Marker(
                             state = markerState,
-                            title = "You are here",
-                            icon = com.google.android.gms.maps.model.BitmapDescriptorFactory.defaultMarker(com.google.android.gms.maps.model.BitmapDescriptorFactory.HUE_AZURE)
+                            title = "Selected Location",
+                            icon = com.google.android.gms.maps.model.BitmapDescriptorFactory.defaultMarker(com.google.android.gms.maps.model.BitmapDescriptorFactory.HUE_RED)
                         )
                     }
                 }
@@ -259,22 +292,45 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                     Icon(Icons.Outlined.Fullscreen, contentDescription = "Full screen", tint = Color.Black)
                 }
 
+                // Accuracy Overlay
+                if (accuracy > 0) {
+                    Surface(
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .align(Alignment.BottomStart),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Black.copy(alpha = 0.7f)
+                    ) {
+                        Text(
+                            "Accurate to ${accuracy.toInt()} meters",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            color = Color.White,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .padding(16.dp)
                         .align(Alignment.TopEnd)
-                        .size(48.dp)
+                        .size(52.dp)
+                        .shadow(4.dp, CircleShape)
                         .background(Color.White, CircleShape)
                         .clickable { 
-                            scope.launch {
-                                cameraPositionState.animate(
-                                    com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(markerState.position, 17f)
-                                )
+                            if (accuracy > 0) {
+                                scope.launch {
+                                    cameraPositionState.animate(
+                                        com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(markerState.position, 18f)
+                                    )
+                                }
+                            } else {
+                                requestSingleUpdate()
                             }
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Outlined.MyLocation, contentDescription = "My location", tint = Color.Black)
+                    Icon(Icons.Outlined.MyLocation, contentDescription = "My location", tint = Color(0xFF00E676), modifier = Modifier.size(28.dp))
                 }
             }
 
@@ -308,24 +364,36 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         }
 
                         item {
-                            val isAccurateEnough = accuracy > 0 && accuracy < 100 // 100m threshold for "proper"
+                            val isAccurateEnough = accuracy > 0 && accuracy <= 15
+                            val isPinpoint = accuracy > 0 && accuracy <= 5
+                            
                             LocationActionRow(
                                 title = "Send your current location",
                                 subtitle = when {
-                                    accuracy == 0f -> "Searching for GPS..."
-                                    accuracy < 20 -> "High accuracy • ${accuracy.toInt()} meters"
-                                    else -> "Accurate to ${accuracy.toInt()} meters"
+                                    accuracy == 0f -> "Searching for GPS satellites..."
+                                    isPinpoint -> "Pinpoint accuracy • Accurate to ${accuracy.toInt()} meters"
+                                    accuracy <= 10 -> "High accuracy • Accurate to ${accuracy.toInt()} meters"
+                                    accuracy <= 25 -> "Good accuracy • Accurate to ${accuracy.toInt()} meters"
+                                    else -> "Improving accuracy... (${accuracy.toInt()} meters)"
                                 },
                                 icon = Icons.Outlined.MyLocation,
                                 iconBg = Color.Black,
-                                iconTint = if (isAccurateEnough) Color(0xFF00E676) else Color.Gray,
+                                iconTint = when {
+                                    isPinpoint -> Color(0xFF00E676)
+                                    isAccurateEnough -> Color(0xFF00E676)
+                                    else -> Color.Gray
+                                },
                                 border = isAccurateEnough,
                                 onClick = {
                                     if (accuracy > 0) {
-                                        onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
-                                        onBack()
+                                        if (accuracy > 20) {
+                                            Toast.makeText(context, "Waiting for high accuracy (currently ${accuracy.toInt()}m)...", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            onSendLocation("${markerState.position.latitude},${markerState.position.longitude}|${accuracy.toInt()}")
+                                            onBack()
+                                        }
                                     } else {
-                                        Toast.makeText(context, "Waiting for better GPS accuracy...", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Searching for GPS satellites...", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             )

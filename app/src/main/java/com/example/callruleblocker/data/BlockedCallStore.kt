@@ -12,8 +12,15 @@ class BlockedCallStore(context: Context) {
 
     @Synchronized
     fun record(number: String, simSlot: Int, time: Long = System.currentTimeMillis()) {
+        val normalized = normalize(number)
         val entries = read().filter { time - it.time < RETENTION_MS }.toMutableList()
-        entries.add(0, Entry(normalize(number), time, simSlot))
+        
+        // De-duplicate: If a block was already recorded for this number within 15 seconds, skip
+        if (entries.any { it.number == normalized && kotlin.math.abs(it.time - time) < 15000 }) {
+            return
+        }
+
+        entries.add(0, Entry(normalized, time, simSlot))
         val array = JSONArray()
         entries.take(MAX_ENTRIES).forEach { entry ->
             array.put(JSONObject().apply {

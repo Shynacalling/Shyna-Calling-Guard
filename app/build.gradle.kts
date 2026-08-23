@@ -80,12 +80,21 @@ dependencies {
     // LiveKit
     implementation("io.livekit:livekit-android:2.28.0")
     
+    // WorkManager for Backend Tasks
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+
     // Networking
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.10.1")
 
     // Cloudinary for Media Uploads
     implementation("com.cloudinary:cloudinary-android:3.1.2")
+
+    // Media3 ExoPlayer
+    val media3_version = "1.5.0"
+    implementation("androidx.media3:media3-exoplayer:${media3_version}")
+    implementation("androidx.media3:media3-ui:${media3_version}")
+    implementation("androidx.media3:media3-common:${media3_version}")
 
     // CameraX
     val camerax_version = "1.4.1"

@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
@@ -82,12 +85,41 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
     
     var isMuted by remember { mutableStateOf(false) }
     var isCameraOff by remember { mutableStateOf(false) }
-    var isSpeakerOn by remember { mutableStateOf(false) }
+    var isSpeakerOn by remember { mutableStateOf(call?.type == AppCallType.VIDEO) }
     var isFrontCamera by remember { mutableStateOf(true) }
     var callDuration by remember { mutableLongStateOf(0L) }
+    var networkType by remember { mutableStateOf("Unknown") }
 
     val callManager = remember { LiveKitCallManager(context) }
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+
+    // RINGTONE LOGIC
+    DisposableEffect(call?.status) {
+        var ringtone: Ringtone? = null
+        if (isIncoming && call?.status == AppCallStatus.RINGING) {
+            try {
+                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                ringtone = RingtoneManager.getRingtone(context, ringtoneUri)
+                ringtone?.play()
+                Log.d("ShynaCall", "Incoming ringtone started")
+            } catch (e: Exception) {
+                Log.e("ShynaCall", "Ringtone Error: ${e.message}")
+            }
+        }
+        onDispose {
+            ringtone?.stop()
+        }
+    }
+
+    // MONITOR NETWORK
+    LaunchedEffect(Unit) {
+        while (true) {
+            networkType = if (com.example.callruleblocker.data.NetworkDetector.isWifi(context)) "Wi-Fi" 
+                          else if (com.example.callruleblocker.data.NetworkDetector.isMobile(context)) "Mobile Data" 
+                          else "No Network"
+            delay(5000)
+        }
+    }
 
     // BACK BUTTON PROTECTION
     BackHandler(enabled = true) {
@@ -126,12 +158,55 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
         }
     }
 
+    val routeAudio = { speaker: Boolean ->
+        Log.d("ShynaCall", "[AUDIO] Routing Request: speaker=$speaker")
+        scope.launch {
+            delay(150) // Stability delay
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    val devices = audioManager.availableCommunicationDevices
+                    val speakerDevice = devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    val earpieceDevice = devices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                    
+                    if (speaker && speakerDevice != null) {
+                        audioManager.setCommunicationDevice(speakerDevice)
+                        Log.d("ShynaCall", "[AUDIO] Route set to SPEAKER (S+)")
+                    } else if (!speaker && earpieceDevice != null) {
+                        audioManager.setCommunicationDevice(earpieceDevice)
+                        Log.d("ShynaCall", "[AUDIO] Route set to EARPIECE (S+)")
+                    } else if (!speaker) {
+                        audioManager.clearCommunicationDevice()
+                        Log.d("ShynaCall", "[AUDIO] Route CLEARED (Earpiece Fallback)")
+                    }
+                } catch (e: Exception) {
+                    Log.e("ShynaCall", "[AUDIO] S-API Error: ${e.message}")
+                }
+            }
+            
+            try {
+                audioManager.isSpeakerphoneOn = speaker
+                Log.d("ShynaCall", "[AUDIO] isSpeakerphoneOn set to $speaker")
+            } catch (e: Exception) {
+                Log.e("ShynaCall", "[AUDIO] Legacy Toggle Error: ${e.message}")
+            }
+        }
+    }
+
     val joinCall = {
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (call?.type == AppCallType.VIDEO) permissions.add(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
         
         if (permissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            
+            // Initial Audio Route
+            routeAudio(isSpeakerOn)
+
             scope.launch {
                 try {
                     val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
@@ -142,18 +217,79 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                     }
                     val r = callManager.joinRoom(call!!.roomName, currentUid)
                     room = r
-                    if (call?.type == AppCallType.VIDEO) {
-                        localVideoTrack = r.localParticipant.videoTrackPublications.firstOrNull()?.second as? VideoTrack
-                        scope.launch { r.localParticipant.setCameraEnabled(!isCameraOff) }
+                    Log.d("ShynaCall", "[CALL] Room Connected: ${call!!.roomName}")
+                    
+                    // Critical Audio Setup
+                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                    routeAudio(isSpeakerOn)
+                    
+                    // INITIAL TRACK SYNC
+                    // Match the working pattern in VideoCallScreen.kt
+                    localVideoTrack = r.localParticipant.videoTrackPublications.firstOrNull()?.second as? VideoTrack
+
+                    // Check remote participants already in room
+                    r.remoteParticipants.values.forEach { p ->
+                        val remoteTrack = p.videoTrackPublications.firstOrNull()?.second as? VideoTrack
+                        if (remoteTrack != null) {
+                            remoteVideoTrack = remoteTrack
+                            Log.d("ShynaCall", "[VIDEO] Remote Track Synced from ${p.identity}")
+                        }
                     }
-                    scope.launch { r.localParticipant.setMicrophoneEnabled(!isMuted) }
+                    
+                    scope.launch { 
+                        r.localParticipant.setMicrophoneEnabled(!isMuted)
+                        Log.d("ShynaCall", "[AUDIO] Local Mic Enabled: ${!isMuted}")
+                    }
+                    if (call?.type == AppCallType.VIDEO) {
+                        scope.launch { 
+                            r.localParticipant.setCameraEnabled(!isCameraOff)
+                            Log.d("ShynaCall", "[VIDEO] Local Camera Enabled: ${!isCameraOff}")
+                        }
+                    }
                     
                     CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ACTIVE, callId)
                     CallSignalingManager.updateCallStatus(callId, AppCallStatus.CONNECTED)
 
                     r.events.collect { event ->
-                        if (event is RoomEvent.TrackSubscribed && event.track is VideoTrack) {
-                            remoteVideoTrack = event.track as VideoTrack
+                        when (event) {
+                            is RoomEvent.TrackSubscribed -> {
+                                if (event.track is VideoTrack) {
+                                    remoteVideoTrack = event.track as VideoTrack
+                                    Log.d("ShynaCall", "[VIDEO] Remote Track Subscribed: ${event.track.sid}")
+                                } else {
+                                    Log.d("ShynaCall", "[AUDIO] Remote Audio Subscribed: ${event.track.sid}")
+                                }
+                            }
+                            is RoomEvent.TrackUnsubscribed -> {
+                                if (event.track == remoteVideoTrack) {
+                                    remoteVideoTrack = null
+                                    Log.d("ShynaCall", "[VIDEO] Remote Track Unsubscribed")
+                                }
+                            }
+                            is RoomEvent.TrackPublished -> {
+                                Log.d("ShynaCall", "[CALL] Track Published by ${event.participant.identity}: ${event.publication.sid}")
+                                if (event.participant == r.localParticipant && event.publication.track is VideoTrack) {
+                                    localVideoTrack = event.publication.track as VideoTrack
+                                    Log.d("ShynaCall", "[VIDEO] Local Track Synced")
+                                }
+                            }
+                            is RoomEvent.ParticipantConnected -> {
+                                Log.d("ShynaCall", "[CALL] Participant Joined: ${event.participant.identity}")
+                            }
+                            is RoomEvent.ParticipantDisconnected -> {
+                                Log.d("ShynaCall", "[CALL] Participant Left: ${event.participant.identity}")
+                                if (r.remoteParticipants.isEmpty()) {
+                                    Log.d("ShynaCall", "[CALL] Room Empty - Closing Screen")
+                                    CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
+                                }
+                            }
+                            is RoomEvent.Connected -> {
+                                Log.d("ShynaCall", "[CALL] Room Connection Established")
+                            }
+                            is RoomEvent.Disconnected -> {
+                                Log.d("ShynaCall", "[CALL] Room Disconnected")
+                            }
+                            else -> {}
                         }
                     }
                 } catch (e: Exception) {
@@ -242,6 +378,7 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                             isIncoming = isIncoming,
                             room = room,
                             duration = callDuration,
+                            networkType = networkType,
                             remoteTrack = remoteVideoTrack,
                             localTrack = localVideoTrack,
                             isMuted = isMuted,
@@ -249,15 +386,21 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                             isSpeakerOn = isSpeakerOn,
                             onMuteToggle = {
                                 isMuted = !isMuted
-                                scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
+                                scope.launch { 
+                                    room?.localParticipant?.setMicrophoneEnabled(!isMuted)
+                                    routeAudio(isSpeakerOn)
+                                }
                             },
                             onCameraToggle = {
                                 isCameraOff = !isCameraOff
-                                scope.launch { room?.localParticipant?.setCameraEnabled(!isCameraOff) }
+                                scope.launch { 
+                                    room?.localParticipant?.setCameraEnabled(!isCameraOff)
+                                    routeAudio(isSpeakerOn)
+                                }
                             },
                             onSpeakerToggle = {
                                 isSpeakerOn = !isSpeakerOn
-                                audioManager.isSpeakerphoneOn = isSpeakerOn
+                                routeAudio(isSpeakerOn)
                             },
                             onSwitchCamera = {
                                 val track = room?.localParticipant?.getTrackPublication(io.livekit.android.room.track.Track.Source.CAMERA)?.track as? io.livekit.android.room.track.LocalVideoTrack
@@ -274,15 +417,19 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                             call = call!!,
                             isIncoming = isIncoming,
                             duration = callDuration,
+                            networkType = networkType,
                             isMuted = isMuted,
                             isSpeakerOn = isSpeakerOn,
                             onMuteToggle = {
                                 isMuted = !isMuted
-                                scope.launch { room?.localParticipant?.setMicrophoneEnabled(!isMuted) }
+                                scope.launch { 
+                                    room?.localParticipant?.setMicrophoneEnabled(!isMuted)
+                                    routeAudio(isSpeakerOn)
+                                }
                             },
                             onSpeakerToggle = {
                                 isSpeakerOn = !isSpeakerOn
-                                audioManager.isSpeakerphoneOn = isSpeakerOn
+                                routeAudio(isSpeakerOn)
                             },
                             onEndCall = {
                                 CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED)
@@ -299,19 +446,57 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
     DisposableEffect(Unit) {
         onDispose {
             callManager.leaveRoom()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            }
             audioManager.isSpeakerphoneOn = false
             audioManager.mode = AudioManager.MODE_NORMAL
             
+            // TRACK CALL USAGE (Estimation: ~50KB per second for voice, ~500KB for video)
+            val bytesPerSec = if (call?.type == AppCallType.VIDEO) 500000L else 50000L
+            val totalBytes = callDuration * bytesPerSec
+            com.example.callruleblocker.data.NetworkUsageTracker.track(context, "calls", sent = totalBytes / 2, received = totalBytes / 2)
+
             // SAVE FINAL RECORD TO HISTORY
             val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
             call?.let { c ->
                 if (currentUid != null) {
                     val finalCall = c.copy(duration = callDuration)
                     CallSignalingManager.saveCallHistory(finalCall, currentUid)
+                    
+                    // SAVE CALL SYSTEM MESSAGE TO CHAT
+                    if (c.status != AppCallStatus.RINGING) {
+                        saveCallMessageToChat(finalCall)
+                    }
                 }
             }
         }
     }
+}
+
+private fun saveCallMessageToChat(call: AppCall) {
+    val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+    val chatId = if (call.callerUid < call.receiverUid) "${call.callerUid}_${call.receiverUid}" else "${call.receiverUid}_${call.callerUid}"
+    
+    val msg = mapOf(
+        "text" to if(call.type == AppCallType.VIDEO) "Video call" else "Audio call",
+        "senderId" to call.callerUid,
+        "timestamp" to com.google.firebase.Timestamp.now(),
+        "type" to "CALL",
+        "callId" to call.id,
+        "callType" to call.type.name,
+        "callStatus" to call.status.name,
+        "callDuration" to call.duration
+    )
+    
+    db.collection("chats").document(chatId).collection("messages").add(msg)
+    
+    val statusLabel = when(call.status) {
+        AppCallStatus.MISSED -> "Missed ${call.type.name.lowercase()} call"
+        AppCallStatus.REJECTED -> "Rejected ${call.type.name.lowercase()} call"
+        else -> "${if(call.type == AppCallType.VIDEO) "📹" else "📞"} ${call.type.name.lowercase()} call"
+    }
+    db.collection("chats").document(chatId).set(mapOf("lastMessage" to statusLabel, "timestamp" to com.google.firebase.Timestamp.now()), com.google.firebase.firestore.SetOptions.merge())
 }
 
 @Composable
@@ -389,7 +574,7 @@ fun OutgoingCallUI(call: AppCall, onCancel: () -> Unit) {
 }
 
 @Composable
-fun VoiceCallUI(call: AppCall, isIncoming: Boolean, duration: Long, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
+fun VoiceCallUI(call: AppCall, isIncoming: Boolean, duration: Long, networkType: String, isMuted: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onSpeakerToggle: () -> Unit, onEndCall: () -> Unit) {
     val peerName = if (isIncoming) call.callerName else call.receiverName
     val peerPhoto = if (isIncoming) call.callerPhoto else call.receiverPhoto
     val statusText = if (call.status == AppCallStatus.CONNECTED) formatDuration(duration) else "Connecting..."
@@ -409,6 +594,10 @@ fun VoiceCallUI(call: AppCall, isIncoming: Boolean, duration: Long, isMuted: Boo
             Spacer(Modifier.height(40.dp))
             Text(peerName, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.ExtraBold)
             Text(statusText, color = ShynaDesign.colors.BrandGreen, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            
+            if (call.status == AppCallStatus.CONNECTED) {
+                Text(networkType, color = Color.White.copy(0.5f), fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+            }
         }
 
         Row(
@@ -430,7 +619,7 @@ fun VoiceCallUI(call: AppCall, isIncoming: Boolean, duration: Long, isMuted: Boo
 }
 
 @Composable
-fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, duration: Long, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
+fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, duration: Long, networkType: String, remoteTrack: VideoTrack?, localTrack: VideoTrack?, isMuted: Boolean, isCameraOff: Boolean, isSpeakerOn: Boolean, onMuteToggle: () -> Unit, onCameraToggle: () -> Unit, onSpeakerToggle: () -> Unit, onSwitchCamera: () -> Unit, onEndCall: () -> Unit) {
     val peerName = if (isIncoming) call.callerName else call.receiverName
     val statusText = if (call.status == AppCallStatus.CONNECTED) formatDuration(duration) else "Connecting..."
 
@@ -442,7 +631,11 @@ fun VideoCallUI(call: AppCall, isIncoming: Boolean, room: Room?, duration: Long,
             Box(Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent))).padding(24.dp)) {
                 Column {
                     Text(peerName, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    Text(statusText, color = Color.White.copy(0.8f), fontSize = 14.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(statusText, color = Color.White.copy(0.8f), fontSize = 14.sp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(networkType, color = Color.White.copy(0.5f), fontSize = 12.sp)
+                    }
                 }
             }
         } else {
