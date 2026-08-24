@@ -107,18 +107,14 @@ object CallSignalingManager {
             }
     }
 
-    fun updateCallStatus(callId: String, status: AppCallStatus) {
+    fun updateCallStatus(callId: String, status: AppCallStatus, reason: String? = null) {
+        val updates = mutableMapOf<String, Any>("status" to status.name)
+        reason?.let { updates["endReason"] = it }
+        
         db.collection("app_calls").document(callId)
-            .update("status", status.name)
+            .update(updates)
             .addOnSuccessListener {
-                Log.d(TAG, "STATUS_UPDATED: $callId -> $status")
-                if (status == AppCallStatus.ACCEPTED) {
-                    Log.d(TAG, "CALL_ACCEPTED: $callId")
-                } else if (status == AppCallStatus.REJECTED) {
-                    Log.d(TAG, "CALL_REJECTED: $callId")
-                } else if (status == AppCallStatus.ENDED) {
-                    Log.d(TAG, "CALL_ENDED: $callId")
-                }
+                Log.d(TAG, "STATUS_UPDATED: $callId -> $status (Reason: $reason)")
             }
             .addOnFailureListener { e ->
                 Log.e(TAG, "STATUS_UPDATE_FAILED: id=$callId target=$status error=${e.message}")
@@ -143,8 +139,10 @@ object CallSignalingManager {
             "callId" to call.id,
             "callerUid" to call.callerUid,
             "callerName" to call.callerName,
+            "callerPhoto" to call.callerPhoto,
             "receiverUid" to call.receiverUid,
             "receiverName" to call.receiverName,
+            "receiverPhoto" to call.receiverPhoto,
             "type" to call.type.name,
             "status" to call.status.name,
             "duration" to call.duration,
@@ -155,5 +153,29 @@ object CallSignalingManager {
         db.collection("users").document(currentUid)
             .collection("call_history").document(call.id)
             .set(historyEntry, SetOptions.merge())
+    }
+
+    fun saveCallMessageToChat(call: AppCall) {
+        val chatId = if (call.callerUid < call.receiverUid) "${call.callerUid}_${call.receiverUid}" else "${call.receiverUid}_${call.callerUid}"
+        
+        val msg = mapOf(
+            "text" to if(call.type == AppCallType.VIDEO) "Video call" else "Audio call",
+            "senderId" to call.callerUid,
+            "timestamp" to com.google.firebase.Timestamp.now(),
+            "type" to "CALL",
+            "callId" to call.id,
+            "callType" to call.type.name,
+            "callStatus" to call.status.name,
+            "callDuration" to call.duration
+        )
+        
+        db.collection("chats").document(chatId).collection("messages").add(msg)
+        
+        val statusLabel = when(call.status) {
+            AppCallStatus.MISSED -> "Missed ${call.type.name.lowercase()} call"
+            AppCallStatus.REJECTED -> "Rejected ${call.type.name.lowercase()} call"
+            else -> "${if(call.type == AppCallType.VIDEO) "📹" else "📞"} ${call.type.name.lowercase()} call"
+        }
+        db.collection("chats").document(chatId).set(mapOf("lastMessage" to statusLabel, "timestamp" to com.google.firebase.Timestamp.now()), SetOptions.merge())
     }
 }

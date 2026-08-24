@@ -800,7 +800,7 @@ private fun SmartCommunicationContent(
                     }
                 },
                 bottomBar = { 
-                    val unreadChatsCount = remember(recentChats) { recentChats.count { it.unreadCount > 0 } }
+                    val unreadChatsCount by remember(recentChats) { derivedStateOf { recentChats.count { it.unreadCount > 0 } } }
                     PremiumBottomBar(
                         selected = selectedTab, 
                         userPhotoUrl = allUsers.find { it.uid == currentUid }?.photoUrl,
@@ -1043,7 +1043,7 @@ private fun SmartCommunicationContent(
                     }
                 },
                 bottomBar = { 
-                    val unreadChatsCount = remember(recentChats) { recentChats.count { it.unreadCount > 0 } }
+                    val unreadChatsCount by remember(recentChats) { derivedStateOf { recentChats.count { it.unreadCount > 0 } } }
                     PremiumBottomBar(
                         selected = selectedTab, 
                         userPhotoUrl = allUsers.find { it.uid == currentUid }?.photoUrl,
@@ -2985,39 +2985,43 @@ private fun ChatsList(
     onMarkUnread: (String) -> Unit,
     onDeleteChat: (String) -> Unit
 ) {
-    val displayList = remember(recentChats, query, filter, favourites, archived, customLists, isArchivedMode) {
-        recentChats.filter { chat ->
-            val isGroup = chat.isGroup
-            val peer = if (isGroup) null else users.find { it.uid == chat.peerUid }
-            
-            // Archived check
-            val isChatArchived = archived.contains(chat.id)
-            if (isArchivedMode != isChatArchived) return@filter false
-            
-            // Search Match (Local Chat)
-            val chatName = if (isGroup) chat.groupName ?: "Group" else peer?.name ?: ""
-            
-            val matchesSearch = query.isEmpty() || chatName.contains(query, true)
-            if (!matchesSearch) return@filter false
-            
-            // Filter Match
-            when (filter) {
-                "All" -> true
-                "Unread" -> chat.unreadCount > 0
-                "Favourites" -> favourites.contains(chat.id)
-                "Groups" -> isGroup
-                else -> {
-                    val custom = customLists.find { it.name == filter }
-                    if (custom != null) custom.chatIds.contains(chat.id) else true
+    val displayList by remember(recentChats, query, filter, favourites, archived, customLists, isArchivedMode) {
+        derivedStateOf {
+            recentChats.filter { chat ->
+                val isGroup = chat.isGroup
+                val peer = if (isGroup) null else users.find { it.uid == chat.peerUid }
+                
+                // Archived check
+                val isChatArchived = archived.contains(chat.id)
+                if (isArchivedMode != isChatArchived) return@filter false
+                
+                // Search Match (Local Chat)
+                val chatName = if (isGroup) chat.groupName ?: "Group" else peer?.name ?: ""
+                
+                val matchesSearch = query.isEmpty() || chatName.contains(query, true)
+                if (!matchesSearch) return@filter false
+                
+                // Filter Match
+                when (filter) {
+                    "All" -> true
+                    "Unread" -> chat.unreadCount > 0
+                    "Favourites" -> favourites.contains(chat.id)
+                    "Groups" -> isGroup
+                    else -> {
+                        val custom = customLists.find { it.name == filter }
+                        if (custom != null) custom.chatIds.contains(chat.id) else true
+                    }
                 }
             }
         }
     }
 
-    val searchResults = remember(users, query, recentChats) {
-        if (query.isEmpty()) emptyList<RealUser>()
-        else users.filter { u ->
-            u.name.contains(query, true) && recentChats.none { it.peerUid == u.uid }
+    val searchResults by remember(users, query, recentChats) {
+        derivedStateOf {
+            if (query.isEmpty()) emptyList<RealUser>()
+            else users.filter { u ->
+                u.name.contains(query, true) && recentChats.none { it.peerUid == u.uid }
+            }
         }
     }
 
@@ -3049,7 +3053,7 @@ private fun ChatsList(
             items = displayList,
             key = { _, chat -> chat.id }
         ) { index, chat ->
-            val peer = remember(users, chat.peerUid) { users.find { it.uid == chat.peerUid } }
+            val peer = users.find { it.uid == chat.peerUid }
             peer?.let {
                 PremiumChatItem(
                     it, 
@@ -3246,8 +3250,8 @@ private fun UpdatesPage(
     onOpenChannel: (ShynaChannel) -> Unit,
     onFindChannels: () -> Unit
 ) {
-    val statusGroups = remember(statuses) {
-        statuses.groupBy { it.userId }
+    val statusGroups by remember(statuses) {
+        derivedStateOf { statuses.groupBy { it.userId } }
     }
     
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -3420,15 +3424,27 @@ private fun CallsPage(userId: String, allUsers: List<RealUser>) {
             items(history) { call ->
                 val type = call["type"] as? String ?: "VOICE"
                 val status = call["status"] as? String ?: "ENDED"
-                val name = call["receiverName"] as? String ?: call["callerName"] as? String ?: "Unknown"
                 val direction = call["direction"] as? String ?: "outgoing"
+                val name = call["receiverName"] as? String ?: call["callerName"] as? String ?: "Unknown"
+                val photo = if(direction == "outgoing") call["receiverPhoto"] as? String else call["callerPhoto"] as? String
                 val time = (call["timestamp"] as? com.google.firebase.Timestamp)?.toDate()?.time ?: 0L
                 val timeStr = remember(time) { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(time)) }
                 val isVideo = type == "VIDEO"
                 val isMissed = status == "MISSED" || status == "REJECTED"
+                val peerUid = if(direction == "outgoing") call["receiverUid"] as? String else call["callerUid"] as? String
 
                 ListItem(
-                    headlineContent = { Text(name, color = if(isMissed && direction == "incoming") Color.Red else ShynaDesign.colors.TextPrimary) },
+                    headlineContent = { 
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(name, color = if(isMissed && direction == "incoming") Color.Red else ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                            if (isMissed) {
+                                Spacer(Modifier.width(8.dp))
+                                Surface(color = Color.Red.copy(alpha = 0.1f), shape = RoundedCornerShape(4.dp)) {
+                                    Text("MISSED", color = Color.Red, fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    },
                     supportingContent = { 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val icon = if(direction == "outgoing") Icons.Default.CallMade else if(isMissed) Icons.AutoMirrored.Default.CallMissed else Icons.AutoMirrored.Default.CallReceived
@@ -3439,12 +3455,15 @@ private fun CallsPage(userId: String, allUsers: List<RealUser>) {
                     },
                     leadingContent = { 
                         Surface(Modifier.size(48.dp), shape = CircleShape, color = ShynaDesign.colors.DividerColor) { 
-                            Icon(Icons.Default.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.padding(12.dp)) 
+                            if (!photo.isNullOrBlank()) {
+                                AsyncImage(photo, null, contentScale = ContentScale.Crop)
+                            } else {
+                                Icon(Icons.Default.Person, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.padding(12.dp)) 
+                            }
                         } 
                     },
                     trailingContent = { 
                         IconButton(onClick = {
-                            val peerUid = if(direction == "outgoing") call["receiverUid"] as? String else call["callerUid"] as? String
                             if (peerUid != null) {
                                 // Start Call
                                 CallSignalingManager.startCall(
@@ -3454,7 +3473,7 @@ private fun CallsPage(userId: String, allUsers: List<RealUser>) {
                                     currentUserProfile?.photoUrl, 
                                     peerUid, 
                                     name, 
-                                    null, 
+                                    photo, 
                                     if(isVideo) AppCallType.VIDEO else AppCallType.VOICE, 
                                     { created ->
                                         mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })

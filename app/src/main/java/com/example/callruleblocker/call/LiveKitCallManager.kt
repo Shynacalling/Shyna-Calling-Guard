@@ -17,7 +17,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 class LiveKitCallManager(private val context: Context) {
     private var room: Room? = null
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val gson = Gson()
 
     private fun getTokenServerUrl(): String {
@@ -83,15 +87,22 @@ class LiveKitCallManager(private val context: Context) {
     }
 
     suspend fun joinRoom(roomName: String, userId: String): Room {
-        val token = fetchToken(roomName, userId) ?: throw IllegalStateException("Failed to fetch token. Check your internet or server configuration.")
+        Log.d("ShynaCall", "[LIVEKIT] Joining Room: $roomName for User: $userId")
+        val token = fetchToken(roomName, userId) 
+        if (token == null) {
+            Log.e("ShynaCall", "[LIVEKIT] Token Fetch Failed for Room: $roomName")
+            throw IllegalStateException("Failed to fetch token")
+        }
         
+        Log.d("ShynaCall", "[LIVEKIT] Token Received. Connecting to: ${LiveKitConfig.URL}")
         try {
             val r = LiveKit.create(context)
             r.connect(LiveKitConfig.URL, token)
+            Log.d("ShynaCall", "[LIVEKIT] Connected to Room: $roomName. State: ${r.state}")
             room = r
             return r
         } catch (e: Exception) {
-            Log.e("ShynaCall", "LiveKit: Connection failure: ${e.message}")
+            Log.e("ShynaCall", "[LIVEKIT] Connection failure: ${e.message}", e)
             throw e
         }
     }

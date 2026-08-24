@@ -53,7 +53,20 @@ class CallActionReceiver : BroadcastReceiver() {
 
             "com.example.callruleblocker.action.DECLINE_APP_CALL" -> {
                 val callId = intent.getStringExtra("callId") ?: return
-                com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(callId, com.example.callruleblocker.call.AppCallStatus.REJECTED)
+                // Fetch call info to save to history before updating status
+                val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                db.collection("app_calls").document(callId).get().addOnSuccessListener { snapshot ->
+                    val call = snapshot.toObject(com.example.callruleblocker.call.AppCall::class.java)
+                    if (call != null) {
+                        val updatedCall = call.copy(status = com.example.callruleblocker.call.AppCallStatus.REJECTED)
+                        val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+                        if (currentUid != null) {
+                            com.example.callruleblocker.call.CallSignalingManager.saveCallHistory(updatedCall, currentUid)
+                            com.example.callruleblocker.call.CallSignalingManager.saveCallMessageToChat(updatedCall)
+                        }
+                    }
+                    com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(callId, com.example.callruleblocker.call.AppCallStatus.REJECTED)
+                }
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
                 nm.cancel(callId.hashCode())
             }

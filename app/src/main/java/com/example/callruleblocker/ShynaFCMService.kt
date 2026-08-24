@@ -56,12 +56,14 @@ class ShynaFCMService : FirebaseMessagingService() {
                 .get().addOnSuccessListener { d ->
                     if (d.exists()) {
                         Log.d(TAG, "Caller is blocked. Rejecting call.")
-                        CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+                        CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED, "caller_blocked")
                     } else {
-                        // BUSY LOGIC
-                        if (CallStateController.globalState.value == GlobalCallState.ACTIVE) {
-                            Log.d(TAG, "User Busy: Auto-rejecting FCM call.")
-                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED)
+                        // BUSY LOGIC: Only reject if it's a NEW call session. 
+                        // If it's the SAME callId, it's just a duplicate notification.
+                        val currentActiveSession = CallStateController.activeSession.value
+                        if (currentActiveSession != null && currentActiveSession.state != GlobalCallState.IDLE && currentActiveSession.callId != callId) {
+                            Log.d(TAG, "User Busy: Auto-rejecting DIFFERENT FCM call (ID: $callId, Current: ${currentActiveSession.callId})")
+                            CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED, "user_busy_fcm")
                             return@addOnSuccessListener
                         }
                         showCallNotification(callId, callerName, callType)

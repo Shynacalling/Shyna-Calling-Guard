@@ -4,7 +4,7 @@ import android.content.Intent
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
-import androidx.fragment.app.FragmentActivity
+    import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -281,21 +281,28 @@ class MainActivity : FragmentActivity() {
                             Log.e("ShynaCall", "FCM Token sync failed on start", e)
                         }
 
-                        // APP-TO-APP CALL LISTENER
+                        // APP-TO-APP CALL LISTENER (Real-time Signaling)
                         try {
                             com.example.callruleblocker.call.CallSignalingManager.listenForIncomingCalls(user.uid) { call ->
+                                val activeSession = CallStateController.activeSession.value
                                 val currentState = CallStateController.globalState.value
                                 
-                                if (currentState == GlobalCallState.ACTIVE) {
-                                    // BUSY LOGIC: Reject incoming call if already in a call
-                                    Log.d("ShynaCall", "User Busy: Rejecting incoming app call.")
+                                // FORENSIC LOG
+                                Log.d("ShynaCall", "Incoming Call Event: id=${call.id} status=${call.status} current_active_id=${activeSession?.callId} current_state=$currentState")
+
+                                if (currentState != GlobalCallState.IDLE && currentState != GlobalCallState.ENDED && activeSession?.callId != call.id) {
+                                    // REAL BUSY LOGIC: Only reject if it's a DIFFERENT call than the one we are already in.
+                                    Log.d("ShynaCall", "User Truly Busy: Auto-rejecting new incoming call ${call.id}")
                                     com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(call.id, com.example.callruleblocker.call.AppCallStatus.REJECTED)
-                                    // Optionally show a notification that you missed a call while busy
+                                } else if (activeSession?.callId == call.id) {
+                                    // IGNORE: Document update for the current active call.
+                                    Log.d("ShynaCall", "Ignoring update for current active call ${call.id}")
                                 } else {
+                                    // Start the call screen
                                     val intent = Intent(this@MainActivity, AppCallActivity::class.java).apply {
                                         putExtra("callId", call.id)
                                         putExtra("isIncoming", true)
-                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                                     }
                                     startActivity(intent)
                                 }
