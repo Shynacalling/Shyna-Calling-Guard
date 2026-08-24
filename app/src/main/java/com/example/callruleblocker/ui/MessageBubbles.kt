@@ -239,15 +239,13 @@ fun LinkMessageBubble(m: UniversalMessage) {
 }
 
 @Composable
-fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false, onMediaClick: (UniversalMessage) -> Unit = {}) {
+fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
     val mContext = LocalContext.current
     val scope = rememberCoroutineScope()
     var downloadProgress by remember { mutableFloatStateOf(0f) }
     var isDownloading by remember { mutableStateOf(false) }
 
     val ext = remember(m.fileName) { m.fileName?.substringAfterLast(".", "")?.lowercase() ?: "" }
-    val isImage = ext in listOf("jpg", "jpeg", "png", "webp", "gif")
-    val isVideo = ext in listOf("mp4", "mov", "avi")
 
     fun openFile(file: File) {
         FileOpener.open(mContext, file, m.mimeType)
@@ -257,42 +255,65 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false, on
         val url = m.metadata ?: return
         val rawName = m.fileName ?: "attachment_${System.currentTimeMillis()}"
         val sanitizedName = rawName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        // Use message ID to prevent cache collisions between different files with same name
-        val uniqueName = "${m.id.takeLast(6)}_$sanitizedName"
-        val file = File(mContext.cacheDir, uniqueName)
+        
+        // Final File
+        val finalFile = File(mContext.cacheDir, "${m.id}_$sanitizedName")
+        // Temporary Part File
+        val partFile = File(mContext.cacheDir, "${m.id}_$sanitizedName.part")
 
-        if (file.exists() && file.length() > 0) {
-            openFile(file)
+        if (finalFile.exists() && finalFile.length() > 0) {
+            openFile(finalFile)
             return
         }
 
+        if (isDownloading) return // Prevent duplicate download
+
         isDownloading = true
+        downloadProgress = 0f
+        
         scope.launch(Dispatchers.IO) {
             try {
                 val connection = URL(url).openConnection()
                 connection.connect()
-                val length = connection.contentLength
+                val expectedSize = connection.contentLength.toLong()
                 var totalBytesDownloaded = 0L
+                
                 connection.getInputStream().use { input ->
-                    FileOutputStream(file).use { output ->
-                        val data = ByteArray(4096)
+                    FileOutputStream(partFile).use { output ->
+                        val data = ByteArray(8192)
                         var count: Int
                         while (input.read(data).also { count = it } != -1) {
                             totalBytesDownloaded += count
-                            if (length > 0) downloadProgress = totalBytesDownloaded.toFloat() / length
+                            if (expectedSize > 0) {
+                                downloadProgress = totalBytesDownloaded.toFloat() / expectedSize
+                            }
                             output.write(data, 0, count)
                         }
+                        output.flush()
                     }
                 }
+                
                 withContext(Dispatchers.Main) {
                     isDownloading = false
-                    com.example.callruleblocker.data.NetworkUsageTracker.track(mContext, "media", received = totalBytesDownloaded)
-                    openFile(file)
+                    // VERIFICATION
+                    if (partFile.exists() && (expectedSize <= 0 || partFile.length() == expectedSize)) {
+                        // ATOMIC FINALIZATION
+                        if (partFile.renameTo(finalFile)) {
+                            com.example.callruleblocker.data.NetworkUsageTracker.track(mContext, "media", received = totalBytesDownloaded)
+                            openFile(finalFile)
+                        } else {
+                            Toast.makeText(mContext, "File finalization failed", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        partFile.delete() // Clean up corrupt/incomplete file
+                        Toast.makeText(mContext, "File verification failed. Please try again.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     isDownloading = false
-                    Toast.makeText(mContext, "Download failed", Toast.LENGTH_SHORT).show()
+                    partFile.delete() // Clean up
+                    Toast.makeText(mContext, "Download failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -303,39 +324,9 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false, on
             .width(250.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(ShynaDesign.colors.SurfaceBg.copy(alpha = 0.5f))
-            .clickable(enabled = !isSelectionActive) {
-                if (isImage || isVideo) onMediaClick(m)
-                else downloadAndOpen()
-            }
+            .clickable(enabled = !isSelectionActive) { downloadAndOpen() }
             .padding(12.dp)
     ) {
-        if (isImage || isVideo) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(150.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black.copy(0.1f)),
-                contentAlignment = Alignment.Center
-            ) {
-                val thumbnailUrl = remember(m.metadata) {
-                    if (m.metadata?.startsWith("http") == true && m.metadata.contains("/video/upload/")) {
-                        m.metadata.replace("/video/upload/", "/video/upload/w_400,h_300,c_fill,so_0/").replace(".mp4", ".jpg")
-                    } else {
-                        m.metadata
-                    }
-                }
-                AsyncImage(
-                    model = thumbnailUrl,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-                if (isVideo) Icon(Icons.Default.PlayCircle, null, tint = Color.White, modifier = Modifier.size(40.dp))
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-
         Row(verticalAlignment = Alignment.CenterVertically) {
             val icon = when {
                 ext == "pdf" -> Icons.Default.PictureAsPdf
@@ -344,16 +335,37 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false, on
                 ext == "apk" -> Icons.Default.Android
                 else -> Icons.Default.InsertDriveFile
             }
-            Icon(icon, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(32.dp))
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(ShynaDesign.colors.BrandGreen.copy(0.1f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(24.dp))
+            }
+            
             Spacer(Modifier.width(12.dp))
+            
             Column(Modifier.weight(1f)) {
                 Text(m.fileName ?: "Document", color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Text("${ext.uppercase()} • ${formatFileSize(m.fileSize)}", color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
+                val info = remember(m.fileSize, m.fileName) {
+                    val size = formatFileSize(m.fileSize)
+                    "$ext • $size".uppercase()
+                }
+                Text(info, color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
             }
+            
             if (isDownloading) {
                 CircularProgressIndicator(progress = { downloadProgress }, modifier = Modifier.size(24.dp), color = ShynaDesign.colors.BrandGreen, strokeWidth = 2.dp)
             } else {
-                Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
+                val fileExists = remember(m.id) {
+                    val sanitizedName = m.fileName?.replace(Regex("[^a-zA-Z0-9._-]"), "_") ?: ""
+                    File(mContext.cacheDir, "${m.id}_$sanitizedName").exists()
+                }
+                if (!fileExists) {
+                    Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
+                }
             }
         }
     }

@@ -99,6 +99,10 @@ import java.text.SimpleDateFormat
 import java.util.*
 import android.location.Geocoder
 import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.graphics.Bitmap
+import android.util.Size
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.work.*
 import com.example.callruleblocker.data.DiscoveryWorker
 import com.google.android.gms.location.LocationServices
@@ -212,6 +216,7 @@ private fun SmartCommunicationContent(
     var currentUid by remember { mutableStateOf(auth.currentUser?.uid) }
     
     val allUsers = remember { mutableStateListOf<RealUser>() }
+    val currentUserProfile by remember(currentUid, allUsers.size) { derivedStateOf { allUsers.find { it.uid == currentUid } } }
     var selectedPeerId by remember { mutableStateOf<String?>(null) }
     val drafts = remember { mutableStateMapOf<String, String>() }
     var selectedTab by remember { mutableStateOf(LinkTab.CHATS) }
@@ -869,7 +874,7 @@ private fun SmartCommunicationContent(
                                 Toast.makeText(mContext, "Joined ${channel.name}", Toast.LENGTH_SHORT).show()
                             }
                         )
-                        LinkTab.CALLS -> CallsPage()
+                        LinkTab.CALLS -> CallsPage(currentUid ?: "", allUsers)
                         LinkTab.YOU -> {
                             val currentUser = allUsers.find { it.uid == currentUid }
                             if (showProfileEdit && currentUser != null) {
@@ -1112,7 +1117,7 @@ private fun SmartCommunicationContent(
                                 Toast.makeText(mContext, "Joined ${channel.name}", Toast.LENGTH_SHORT).show()
                             }
                         )
-                        LinkTab.CALLS -> CallsPage()
+                        LinkTab.CALLS -> CallsPage(currentUid ?: "", allUsers)
                         LinkTab.YOU -> {
                             val currentUser = allUsers.find { it.uid == currentUid }
                             if (showProfileEdit && currentUser != null) {
@@ -1210,6 +1215,7 @@ private fun SmartCommunicationContent(
         if (showFullDPUser != null) {
             PeerDetailScreen(
                 user = showFullDPUser!!,
+                allUsers = allUsers,
                 db = db,
                 auth = auth,
                 onBack = { showFullDPUser = null },
@@ -1453,6 +1459,7 @@ private fun SmartChatDetailScreen(
 ) {
     val db = FirebaseFirestore.getInstance()
     val peer = allUsers.find { it.uid == peerId }
+    val currentUserProfile = allUsers.find { it.uid == userId }
     val chatId = if (userId < peerId) "${userId}_${peerId}" else "${peerId}_${userId}"
     var text by remember { mutableStateOf(drafts[chatId] ?: "") }
     val msgs = remember { mutableStateListOf<UniversalMessage>() }
@@ -1472,6 +1479,8 @@ private fun SmartChatDetailScreen(
     var showMuteDialog by remember { mutableStateOf(false) }
     var showNewGroupScoped by remember { mutableStateOf(false) }
     var showRsvpFor by remember { mutableStateOf<UniversalMessage?>(null) }
+    
+    var pendingDocument by remember { mutableStateOf<Map<String, Any>?>(null) }
 
     val onVote: (UniversalMessage, Int) -> Unit = { m, index ->
         val attempts = (m.interactionAttempts[userId] ?: 0)
@@ -1598,6 +1607,63 @@ private fun SmartChatDetailScreen(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { showRsvpFor = null }) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) } },
+            containerColor = ShynaDesign.colors.SurfaceBg
+        )
+    }
+
+    if (pendingDocument != null) {
+        val doc = pendingDocument!!
+        val uri = doc["uri"] as Uri
+        val name = doc["name"] as String
+        val size = doc["size"] as Long
+        val mime = doc["mime"] as String
+        val sizeStr = android.text.format.Formatter.formatFileSize(mContext, size)
+
+        AlertDialog(
+            onDismissRequest = { pendingDocument = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.InsertDriveFile, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(32.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Send Document", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column {
+                    Text(name, color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("${name.substringAfterLast(".").uppercase()} • $sizeStr", color = ShynaDesign.colors.TextSecondary, fontSize = 13.sp)
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDocument = null
+                        onUploadingChange(true)
+                        MediaUploader.upload(uri, mContext, "raw") { url ->
+                            onUploadingChange(false)
+                            if (url != null) {
+                                val msg = mapOf(
+                                    "text" to name, 
+                                    "senderId" to userId, 
+                                    "timestamp" to Timestamp.now(), 
+                                    "type" to MessageType.DOC.name, 
+                                    "metadata" to url,
+                                    "fileName" to name,
+                                    "fileSize" to size,
+                                    "mimeType" to mime,
+                                    "status" to MessageStatus.SENT.name
+                                )
+                                db.collection("chats").document(chatId).collection("messages").add(msg)
+                                db.collection("chats").document(chatId).set(mapOf("lastMessage" to "📄 $name", "timestamp" to Timestamp.now()), SetOptions.merge())
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen)
+                ) { Text("Send") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDocument = null }) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) }
+            },
             containerColor = ShynaDesign.colors.SurfaceBg
         )
     }
@@ -1794,25 +1860,23 @@ private fun SmartChatDetailScreen(
             val name = (meta["name"] as? String) ?: "Document"
             val size = (meta["size"] as? Long) ?: 0L
             val mime = (meta["mime"] as? String) ?: "application/octet-stream"
-            onUploadingChange(true)
-            MediaUploader.upload(it, mContext, "raw") { url ->
-                onUploadingChange(false)
-                if (url != null) {
-                    val msg = mapOf(
-                        "text" to name, 
-                        "senderId" to userId, 
-                        "timestamp" to Timestamp.now(), 
-                        "type" to MessageType.DOC.name, 
-                        "metadata" to url,
-                        "fileName" to name,
-                        "fileSize" to size,
-                        "mimeType" to mime,
-                        "status" to MessageStatus.SENT.name
-                    )
-                    db.collection("chats").document(chatId).collection("messages").add(msg)
-                    db.collection("chats").document(chatId).set(mapOf("lastMessage" to "📄 $name", "timestamp" to Timestamp.now()), SetOptions.merge())
-                }
+            
+            // VALIDATION
+            if (size <= 0) {
+                Toast.makeText(mContext, "Unable to send file: File is empty", Toast.LENGTH_SHORT).show()
+                return@let
             }
+            if (size > 50 * 1024 * 1024) { // 50MB Limit
+                Toast.makeText(mContext, "Unable to send file: Size exceeds 50MB", Toast.LENGTH_SHORT).show()
+                return@let
+            }
+
+            pendingDocument = mapOf(
+                "uri" to it,
+                "name" to name,
+                "size" to size,
+                "mime" to mime
+            )
         }
     }
     val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -2220,19 +2284,55 @@ private fun SmartChatDetailScreen(
                     navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = ShynaDesign.colors.TextPrimary) } },
                     actions = {
                         IconButton(onClick = { 
-                            if (isPeerBlocked) {
-                                Toast.makeText(mContext, "Unblock contact to call", Toast.LENGTH_SHORT).show()
-                                return@IconButton
-                            }
-                            peer?.let { p -> CallSignalingManager.startCall(mContext, userId, "User", null, p.uid, p.name, p.photoUrl, AppCallType.VIDEO, { created -> mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) }) }, {}) } 
+                                if (isPeerBlocked) {
+                                    Toast.makeText(mContext, "Unblock contact to call", Toast.LENGTH_SHORT).show()
+                                    return@IconButton
+                                }
+                                peer?.let { p -> 
+                                    CallSignalingManager.startCall(
+                                        mContext, 
+                                        userId, 
+                                        currentUserProfile?.name ?: "User", 
+                                        currentUserProfile?.photoUrl, 
+                                        p.uid, 
+                                        p.name, 
+                                        p.photoUrl, 
+                                        AppCallType.VIDEO, 
+                                        { created -> 
+                                            mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { 
+                                                putExtra("callId", created.id)
+                                                putExtra("isIncoming", false) 
+                                            }) 
+                                        }, 
+                                        {}
+                                    ) 
+                                } 
                         }) { Icon(Icons.Outlined.Videocam, null, tint = ShynaDesign.colors.TextPrimary) }
                         
                         IconButton(onClick = { 
-                            if (isPeerBlocked) {
-                                Toast.makeText(mContext, "Unblock contact to call", Toast.LENGTH_SHORT).show()
-                                return@IconButton
-                            }
-                            peer?.let { p -> CallSignalingManager.startCall(mContext, userId, "User", null, p.uid, p.name, p.photoUrl, AppCallType.VOICE, { created -> mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) }) }, {}) } 
+                                if (isPeerBlocked) {
+                                    Toast.makeText(mContext, "Unblock contact to call", Toast.LENGTH_SHORT).show()
+                                    return@IconButton
+                                }
+                                peer?.let { p -> 
+                                    CallSignalingManager.startCall(
+                                        mContext, 
+                                        userId, 
+                                        currentUserProfile?.name ?: "User", 
+                                        currentUserProfile?.photoUrl, 
+                                        p.uid, 
+                                        p.name, 
+                                        p.photoUrl, 
+                                        AppCallType.VOICE, 
+                                        { created -> 
+                                            mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { 
+                                                putExtra("callId", created.id)
+                                                putExtra("isIncoming", false) 
+                                            }) 
+                                        }, 
+                                        {}
+                                    ) 
+                                } 
                         }) { Icon(Icons.Outlined.Call, null, tint = ShynaDesign.colors.TextPrimary) }
                         
                         Box {
@@ -2377,9 +2477,20 @@ private fun SmartChatDetailScreen(
                                 onCallAgain = { callMsg ->
                                     val isVideo = callMsg.callType == "VIDEO"
                                     peer?.let { p ->
-                                        CallSignalingManager.startCall(mContext, userId, "User", null, p.uid, p.name, p.photoUrl, if(isVideo) AppCallType.VIDEO else AppCallType.VOICE, { created -> 
-                                            mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) }) 
-                                        }, {})
+                                        CallSignalingManager.startCall(
+                                            mContext, 
+                                            userId, 
+                                            currentUserProfile?.name ?: "User", 
+                                            currentUserProfile?.photoUrl, 
+                                            p.uid, 
+                                            p.name, 
+                                            p.photoUrl, 
+                                            if(isVideo) AppCallType.VIDEO else AppCallType.VOICE, 
+                                            { created -> 
+                                                mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) }) 
+                                            }, 
+                                            {}
+                                        )
                                     }
                                 }
                             )
@@ -2594,7 +2705,7 @@ fun PremiumMessageBubble(
                             MessageType.LOCATION -> LocationMessageBubble(m, isSelectionActive)
                             MessageType.LIVE_LOCATION -> LiveLocationMessageBubble(m)
                             MessageType.LINK -> LinkMessageBubble(m)
-                            MessageType.DOC -> DocMessageBubble(m, isSelectionActive, onMediaClick)
+                            MessageType.DOC -> DocMessageBubble(m, isSelectionActive)
                             MessageType.CONTACT -> ContactMessageBubble(m)
                             MessageType.EVENT -> EventMessageBubble(m, currentUserId, onEventRSVP)
                             MessageType.POLL -> PollMessageBubble(m, currentUserId, onPollVote)
@@ -3277,11 +3388,11 @@ private fun CommunitiesPage(channels: List<ShynaChannel>, currentUser: RealUser?
 }
 
 @Composable
-private fun CallsPage() {
+private fun CallsPage(userId: String, allUsers: List<RealUser>) {
     val db = FirebaseFirestore.getInstance()
-    val userId = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: ""
     var history by remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
     val mContext = LocalContext.current
+    val currentUserProfile = allUsers.find { it.uid == userId }
 
     LaunchedEffect(userId) {
         if (userId.isNotEmpty()) {
@@ -3336,9 +3447,20 @@ private fun CallsPage() {
                             val peerUid = if(direction == "outgoing") call["receiverUid"] as? String else call["callerUid"] as? String
                             if (peerUid != null) {
                                 // Start Call
-                                CallSignalingManager.startCall(mContext, userId, "User", null, peerUid, name, null, if(isVideo) AppCallType.VIDEO else AppCallType.VOICE, { created ->
-                                    mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
-                                }, {})
+                                CallSignalingManager.startCall(
+                                    mContext, 
+                                    userId, 
+                                    currentUserProfile?.name ?: "User", 
+                                    currentUserProfile?.photoUrl, 
+                                    peerUid, 
+                                    name, 
+                                    null, 
+                                    if(isVideo) AppCallType.VIDEO else AppCallType.VOICE, 
+                                    { created ->
+                                        mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
+                                    }, 
+                                    {}
+                                )
                             }
                         }) {
                             Icon(if (isVideo) Icons.Default.Videocam else Icons.Default.Call, null, tint = ShynaDesign.colors.BrandGreen)
@@ -3406,6 +3528,7 @@ private fun exportChat(context: Context, name: String, msgs: List<UniversalMessa
 @Composable
 private fun PeerDetailScreen(
     user: RealUser,
+    allUsers: List<RealUser>,
     db: FirebaseFirestore,
     auth: FirebaseAuth,
     onBack: () -> Unit,
@@ -3414,6 +3537,8 @@ private fun PeerDetailScreen(
 ) {
     val design = ShynaDesign.colors
     val mContext = LocalContext.current
+    val currentUid = auth.currentUser?.uid ?: ""
+    val currentUserProfile = allUsers.find { it.uid == currentUid }
 
     Scaffold(
         topBar = {
@@ -3447,14 +3572,36 @@ private fun PeerDetailScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                 DetailAction(Icons.AutoMirrored.Outlined.Message, "Message") { onMessage() }
                 DetailAction(Icons.Outlined.Call, "Audio") {
-                    CallSignalingManager.startCall(mContext, com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "", "User", null, user.uid, user.name, user.photoUrl, AppCallType.VOICE, { created ->
-                        mContext.startActivity(Intent(mContext, com.example.callruleblocker.AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
-                    }, {})
+                    CallSignalingManager.startCall(
+                        mContext, 
+                        currentUid, 
+                        currentUserProfile?.name ?: "User", 
+                        currentUserProfile?.photoUrl, 
+                        user.uid, 
+                        user.name, 
+                        user.photoUrl, 
+                        AppCallType.VOICE, 
+                        { created ->
+                            mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
+                        }, 
+                        {}
+                    )
                 }
                 DetailAction(Icons.Outlined.Videocam, "Video") {
-                    CallSignalingManager.startCall(mContext, com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid ?: "", "User", null, user.uid, user.name, user.photoUrl, AppCallType.VIDEO, { created ->
-                        mContext.startActivity(Intent(mContext, com.example.callruleblocker.AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
-                    }, {})
+                    CallSignalingManager.startCall(
+                        mContext, 
+                        currentUid, 
+                        currentUserProfile?.name ?: "User", 
+                        currentUserProfile?.photoUrl, 
+                        user.uid, 
+                        user.name, 
+                        user.photoUrl, 
+                        AppCallType.VIDEO, 
+                        { created ->
+                            mContext.startActivity(Intent(mContext, AppCallActivity::class.java).apply { putExtra("callId", created.id); putExtra("isIncoming", false) })
+                        }, 
+                        {}
+                    )
                 }
                 DetailAction(Icons.Outlined.Search, "Search") { onSearchInChat() }
             }
@@ -4408,13 +4555,22 @@ private fun getFileName(context: Context, uri: Uri): String? {
 
 // --- PREMIUM GALLERY PICKER ---
 
+private fun formatGalleryDuration(ms: Long): String {
+    if (ms <= 0) return "0:00"
+    val totalSec = ms / 1000
+    val min = totalSec / 60
+    val sec = totalSec % 60
+    return String.format("%d:%02d", min, sec)
+}
+
 private data class GalleryMedia(
     val id: Long, 
     val uri: Uri, 
     val name: String, 
     val dateAdded: Long, 
     val isVideo: Boolean,
-    val album: String
+    val album: String,
+    val duration: Long = 0
 )
 
 @Composable
@@ -4435,6 +4591,13 @@ private fun PremiumGalleryScreen(onBack: () -> Unit, onMediaSelected: (List<Pair
             android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
             android.provider.MediaStore.MediaColumns.DATE_ADDED,
             android.provider.MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
+        )
+        val videoProjection = arrayOf(
+            android.provider.MediaStore.MediaColumns._ID,
+            android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+            android.provider.MediaStore.MediaColumns.DATE_ADDED,
+            android.provider.MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+            android.provider.MediaStore.Video.Media.DURATION
         )
         val sortOrder = "${android.provider.MediaStore.MediaColumns.DATE_ADDED} DESC"
         
@@ -4457,16 +4620,22 @@ private fun PremiumGalleryScreen(onBack: () -> Unit, onMediaSelected: (List<Pair
         // Videos
         mContext.contentResolver.query(
             android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            projection, null, null, sortOrder
+            videoProjection, null, null, sortOrder
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns._ID)
             val nameCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DISPLAY_NAME)
             val dateCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.DATE_ADDED)
             val albumCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            val durCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Video.Media.DURATION)
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val uri = android.content.ContentUris.withAppendedId(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-                allMedia.add(GalleryMedia(id, uri, cursor.getString(nameCol) ?: "", cursor.getLong(dateCol) * 1000, true, cursor.getString(albumCol) ?: "Internal"))
+                allMedia.add(GalleryMedia(
+                    id, uri, cursor.getString(nameCol) ?: "", 
+                    cursor.getLong(dateCol) * 1000, true, 
+                    cursor.getString(albumCol) ?: "Internal",
+                    cursor.getLong(durCol)
+                ))
             }
         }
         
@@ -4566,8 +4735,34 @@ private fun PremiumGalleryScreen(onBack: () -> Unit, onMediaSelected: (List<Pair
                                 rowItems.forEach { item ->
                                     val isSelected = selectedMedia.contains(item)
                                     Box(Modifier.weight(1f).aspectRatio(1f).padding(1.dp).clickable { if (isSelected) selectedMedia.remove(item) else selectedMedia.add(item) }) {
-                                        AsyncImage(model = item.uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                                        if (item.isVideo) Icon(Icons.Default.PlayCircle, null, tint = Color.White.copy(0.7f), modifier = Modifier.align(Alignment.Center).size(28.dp))
+                                        if (item.isVideo) {
+                                            val thumb by produceState<Bitmap?>(null, item.uri) {
+                                                value = try {
+                                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                                        mContext.contentResolver.loadThumbnail(item.uri, Size(300, 300), null)
+                                                    } else {
+                                                        @Suppress("DEPRECATION")
+                                                        MediaStore.Video.Thumbnails.getThumbnail(mContext.contentResolver, item.id, MediaStore.Video.Thumbnails.MINI_KIND, null)
+                                                    }
+                                                } catch (e: Exception) { null }
+                                            }
+                                            if (thumb != null) {
+                                                Image(bitmap = thumb!!.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                            } else {
+                                                Box(Modifier.fillMaxSize().background(Color.DarkGray), contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Default.PlayCircle, null, tint = Color.White.copy(0.5f))
+                                                }
+                                            }
+                                            
+                                            // Duration Badge
+                                            Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color.Black.copy(0.6f), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 2.dp)) {
+                                                Text(formatGalleryDuration(item.duration), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                            Icon(Icons.Default.PlayCircle, null, tint = Color.White.copy(0.7f), modifier = Modifier.align(Alignment.Center).size(28.dp))
+                                        } else {
+                                            AsyncImage(model = item.uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                        }
+                                        
                                         Box(Modifier.fillMaxSize().padding(6.dp)) {
                                             Icon(if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked, null, tint = if(isSelected) ShynaDesign.colors.BrandGreen else Color.White.copy(0.8f), modifier = Modifier.align(Alignment.TopStart).size(22.dp))
                                         }

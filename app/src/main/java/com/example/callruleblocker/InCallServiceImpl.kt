@@ -8,6 +8,7 @@ import android.telecom.Call
 import android.telecom.CallAudioState
 import android.telecom.InCallService
 import android.telecom.VideoProfile
+import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.Timestamp
@@ -96,10 +97,11 @@ class InCallServiceImpl : InCallService() {
         }
         call.registerCallback(notificationCallback)
         callCallbacks[call] = notificationCallback
-        serviceScope.launch {
-            if (call.state == Call.STATE_RINGING) {
-                OngoingCallNotification.showIncoming(this@InCallServiceImpl, call)
-            } else {
+        
+        // DO NOT show notification here for incoming calls. 
+        // We wait for the rule decision below to prevent "First Ring" leak.
+        if (call.state != Call.STATE_RINGING) {
+            serviceScope.launch {
                 OngoingCallNotification.show(this@InCallServiceImpl, call)
             }
         }
@@ -125,9 +127,22 @@ class InCallServiceImpl : InCallService() {
         }
 
         serviceScope.launch {
+            // FAST PATH: Check specific blocked numbers list immediately
+            // This ensures zero-delay cutting if CallScreeningService was bypassed by OS.
+            val specificBlocked = ruleRepository.blockedSpecificNumbers()
+            val simplifiedNumber = number.filter { it.isDigit() }.takeLast(10)
+            
+            if (specificBlocked.contains(simplifiedNumber)) {
+                Log.d("ShynaCall", "[INCALL] FAST-REJECTING (Pre-check): $number")
+                BlockedCallStore(applicationContext).record(number, 0)
+                OngoingCallNotification.cancel(this@InCallServiceImpl)
+                call.reject(false, null)
+                return@launch
+            }
+
             var simSlot = 0
             val decision = runCatching {
-                withTimeoutOrNull(600) {
+                withTimeoutOrNull(500) {
                     @Suppress("MissingPermission")
                     simSlot = SimSlotResolver.resolveSlot(applicationContext, call.details.accountHandle)
                     ruleRepository.decide(number, simSlot)
@@ -136,6 +151,7 @@ class InCallServiceImpl : InCallService() {
 
             if (call.state == Call.STATE_DISCONNECTED || call.state == Call.STATE_DISCONNECTING) return@launch
             if (decision == "BLOCK") {
+                Log.d("ShynaCall", "[INCALL] BLOCKING: $number")
                 BlockedCallStore(applicationContext).record(number, simSlot)
                 OngoingCallNotification.cancel(this@InCallServiceImpl)
                 call.reject(false, null)

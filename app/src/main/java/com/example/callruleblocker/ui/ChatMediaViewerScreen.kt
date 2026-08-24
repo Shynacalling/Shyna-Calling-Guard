@@ -10,6 +10,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -180,30 +181,23 @@ private fun ZoomableImagePage(imageUrl: String, onToggleControls: () -> Unit) {
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { onToggleControls() },
-                    onDoubleTap = { tapOffset ->
+                    onDoubleTap = {
                         if (scale > 1f) {
                             scale = 1f
                             offset = Offset.Zero
                         } else {
                             scale = 3f
-                            // Zoom towards the tap point if possible, or center
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            val diff = center - tapOffset
-                            offset = diff * (scale - 1f)
+                            // Zoom remains centered, offset stays Zero for "Centre-Lock"
+                            offset = Offset.Zero
                         }
                     }
                 )
             }
             .pointerInput(Unit) {
-                detectTransformGestures { centroid, pan, zoom, _ ->
+                detectTransformGestures { _, _, zoom, _ ->
                     scale = (scale * zoom).coerceIn(1f, 5f)
-                    
-                    // Zoom towards the centroid of the fingers for a "center-locked" feel
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val offsetFromCenter = centroid - center
-                    val newOffset = (offset + pan) * zoom + offsetFromCenter * (1f - zoom)
-                    
-                    offset = if (scale > 1f) newOffset else Offset.Zero
+                    // Pan is disabled by ignoring pan/centroid and keeping offset Zero
+                    offset = Offset.Zero
                 }
             },
         contentAlignment = Alignment.Center
@@ -234,8 +228,19 @@ private fun VideoPlayerPage(
     val context = LocalContext.current
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
+            repeatMode = Player.REPEAT_MODE_OFF
         }
+    }
+
+    var isEnded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                isEnded = state == Player.STATE_ENDED
+            }
+        }
+        exoPlayer.addListener(listener)
     }
 
     var scale by remember { mutableFloatStateOf(1f) }
@@ -269,25 +274,21 @@ private fun VideoPlayerPage(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { onToggleControls() },
-                    onDoubleTap = { tapOffset ->
+                    onDoubleTap = {
                         if (scale > 1f) {
                             scale = 1f
                             offset = Offset.Zero
                         } else {
                             scale = 3f
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            offset = (center - tapOffset) * (scale - 1f)
+                            offset = Offset.Zero
                         }
                     }
                 )
             }
             .pointerInput(Unit) {
-                detectTransformGestures { centroid, pan, zoom, _ ->
+                detectTransformGestures { _, _, zoom, _ ->
                     scale = (scale * zoom).coerceIn(1f, 5f)
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val offsetFromCenter = centroid - center
-                    val newOffset = (offset + pan) * zoom + offsetFromCenter * (1f - zoom)
-                    offset = if (scale > 1f) newOffset else Offset.Zero
+                    offset = Offset.Zero
                 }
             },
         contentAlignment = Alignment.Center
@@ -316,5 +317,22 @@ private fun VideoPlayerPage(
                     translationY = offset.y
                 )
         )
+
+        if (isEnded) {
+            Box(
+                Modifier
+                    .size(80.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(0.5f))
+                    .clickable { 
+                        exoPlayer.seekTo(0)
+                        exoPlayer.play()
+                        isEnded = false
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(48.dp))
+            }
+        }
     }
 }

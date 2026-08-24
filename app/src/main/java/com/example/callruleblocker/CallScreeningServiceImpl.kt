@@ -2,6 +2,7 @@ package com.example.callruleblocker
 
 import android.telecom.Call
 import android.telecom.CallScreeningService
+import android.os.Build
 import android.util.Log
 import com.example.callruleblocker.data.BlockedCallStore
 import com.example.callruleblocker.data.RuleRepository
@@ -29,8 +30,31 @@ class CallScreeningServiceImpl : CallScreeningService() {
         }
 
         serviceScope.launch {
+            // OPTIMIZATION: Immediate pre-check for specific blocked numbers regardless of SIM
+            // to ensure "Zero-Ring" blocking for known spammers.
+            val specificBlocked = ruleRepository.blockedSpecificNumbers()
+            val simplifiedNumber = number.filter { it.isDigit() }.takeLast(10)
+            
+            if (specificBlocked.contains(simplifiedNumber)) {
+                Log.d("ShynaCall", "[SCREENING] FAST-BLOCKING (Pre-check): $number")
+                val response = CallResponse.Builder()
+                    .setDisallowCall(true)
+                    .setRejectCall(true)
+                    .setSkipCallLog(true)
+                    .setSkipNotification(true)
+                    .apply {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            setSilenceCall(true)
+                        }
+                    }
+                    .build()
+                respondToCall(callDetails, response)
+                blockedCallStore.record(number, 0) // Record on default slot for fast path
+                return@launch
+            }
+
             val decision = runCatching {
-                withTimeoutOrNull(500) {
+                withTimeoutOrNull(400) { // Slightly tighter timeout for faster response
                     @Suppress("MissingPermission")
                     val simSlot = SimSlotResolver.resolveSlot(applicationContext, callDetails.accountHandle)
                     ruleRepository.decide(number, simSlot)
@@ -41,16 +65,17 @@ class CallScreeningServiceImpl : CallScreeningService() {
             if (decision == "BLOCK") {
                 Log.d("ShynaCall", "[SCREENING] BLOCKING: $number")
                 
-                // Record the block in our local audit store
                 @Suppress("MissingPermission")
                 val simSlot = SimSlotResolver.resolveSlot(applicationContext, callDetails.accountHandle)
                 blockedCallStore.record(number, simSlot)
 
-                // High-speed system block (No ring, no system log entry if desired)
                 responseBuilder.setDisallowCall(true)
                 responseBuilder.setRejectCall(true)
-                responseBuilder.setSkipCallLog(true) // We manage our own "Auto Blocked" history
+                responseBuilder.setSkipCallLog(true)
                 responseBuilder.setSkipNotification(true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    responseBuilder.setSilenceCall(true)
+                }
             } else {
                 Log.d("ShynaCall", "[SCREENING] ALLOWING: $number")
             }

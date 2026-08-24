@@ -2547,7 +2547,6 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
             
             val be = bs.find(rn, cd)
             val ci = contactInfoCache[norm]
-            val isContact = ci != null
             val isRuleBlocked = norm.isNotBlank() && norm in pbn
 
             // LOGIC: Blocked calls are only shown in "ALL" if they are now contacts.
@@ -2563,7 +2562,7 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
                 id = c.getLong(idIdx),
                 number = rn,
                 name = ci?.first ?: c.getString(nameIdx),
-                type = if (finalType == 99 && isContact) CallLog.Calls.MISSED_TYPE else finalType,
+                type = finalType, // Always use finalType (which is 99 for blocked)
                 date = cd,
                 durationSeconds = c.getLong(durIdx),
                 phoneAccountId = aid,
@@ -2579,7 +2578,6 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
     auditEntries.forEach { entry ->
         val norm = normalizePhone(entry.number)
         val ci = contactInfoCache[norm]
-        val isContact = ci != null
         
         // If this exact blocked call isn't already in our result list (within 10s tolerance)
         val alreadyInList = result.any { normalizePhone(it.number) == norm && abs(it.date - entry.time) < 10000 }
@@ -2589,7 +2587,7 @@ private suspend fun loadRecentCalls(ctx: Context): List<RecentCall> = withContex
                 id = -entry.time, // Negative ID for local-only entries
                 number = entry.number,
                 name = ci?.first,
-                type = if (isContact) CallLog.Calls.MISSED_TYPE else 99,
+                type = 99, // Always 99 for Auto-Blocked
                 date = entry.time,
                 durationSeconds = 0,
                 phoneAccountId = null,

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -23,7 +24,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.callruleblocker.data.Rule
+import com.example.callruleblocker.data.BlockedCallStore
 import com.example.callruleblocker.ui.theme.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import android.content.Context
+import android.widget.Toast
 
 private fun matchTypeLabel(rule: Rule) = when (rule.matchType) {
     "FAMILY_CONTACTS" -> "Family contacts"
@@ -44,6 +51,13 @@ fun RuleListScreen(
     val blockedRules = rules.filter { it.action == "BLOCK" }
     val allowRules = rules.filter { it.action != "BLOCK" }
     val appearance = LocalAppearance.current
+    
+    var showBlockedHistory by remember { mutableStateOf(false) }
+
+    if (showBlockedHistory) {
+        BlockedHistoryScreen(onBack = { showBlockedHistory = false })
+        return
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -84,6 +98,28 @@ fun RuleListScreen(
                                 Text("Blocked callers", color = Color.White, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text("Automated screening and SIM rules", style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.5f))
                             }
+                        }
+                    }
+                }
+
+                item {
+                    Surface(
+                        onClick = { showBlockedHistory = true },
+                        shape = RoundedCornerShape(22.dp),
+                        color = PremiumCard.copy(alpha = 0.6f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Surface(shape = CircleShape, color = appearance.accentColor.copy(alpha = 0.15f)) {
+                                Icon(Icons.Default.Folder, null, tint = appearance.accentColor, modifier = Modifier.padding(10.dp))
+                            }
+                            Spacer(Modifier.width(16.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Auto-blocked history", color = Color.White, fontWeight = FontWeight.Bold)
+                                Text("Calls cut by software automatically", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                            }
+                            Icon(Icons.Default.ChevronRight, null, tint = Color.White.copy(alpha = 0.3f))
                         }
                     }
                 }
@@ -177,5 +213,79 @@ private fun ActionChip(action: String) {
             fontWeight = FontWeight.ExtraBold,
             letterSpacing = 0.5.sp
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BlockedHistoryScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { BlockedCallStore(context) }
+    var history by remember { mutableStateOf(store.getAll()) }
+
+    Scaffold(
+        containerColor = Color.Transparent,
+        topBar = {
+            TopAppBar(
+                title = { Text("Auto-blocked History", color = Color.White, fontWeight = FontWeight.Bold) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) } },
+                actions = {
+                    if (history.isNotEmpty()) {
+                        IconButton(onClick = { 
+                            context.getSharedPreferences("blocked_call_audit", Context.MODE_PRIVATE).edit().clear().apply()
+                            history = emptyList()
+                            Toast.makeText(context, "History cleared", Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Default.DeleteSweep, null, tint = Color.White.copy(alpha = 0.7f))
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            )
+        }
+    ) { padding ->
+        Box(
+            Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(PremiumPurpleTop, PremiumPurpleMid, PremiumPurpleBottom))).padding(padding)
+        ) {
+            if (history.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Outlined.History, null, tint = Color.White.copy(alpha = 0.2f), modifier = Modifier.size(64.dp))
+                        Spacer(Modifier.height(16.dp))
+                        Text("No auto-blocked calls yet", color = Color.White.copy(alpha = 0.4f))
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(history) { entry ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            color = PremiumCard.copy(alpha = 0.8f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
+                        ) {
+                            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Surface(shape = CircleShape, color = Color.Red.copy(alpha = 0.1f)) {
+                                    Icon(Icons.Default.Block, null, tint = Color.Red, modifier = Modifier.padding(8.dp).size(20.dp))
+                                }
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(entry.number, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    val dateStr = remember(entry.time) { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()).format(Date(entry.time)) }
+                                    Text(dateStr, color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                                }
+                                if (entry.simSlot >= 0) {
+                                    CompactSimBadge(index = entry.simSlot + 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

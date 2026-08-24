@@ -91,7 +91,7 @@ class LiveKitCallManager(private val context: Context) {
             room = r
             return r
         } catch (e: Exception) {
-            println("LiveKit: Connection failure: ${e.message}")
+            Log.e("ShynaCall", "LiveKit: Connection failure: ${e.message}")
             throw e
         }
     }

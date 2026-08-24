@@ -32,6 +32,7 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -154,28 +155,27 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     fun requestSingleUpdate() {
         try {
             if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                // Get Last Location for immediate jump
+                // Get Last Location for immediate jump (Priority 1: Speed)
                 fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null && accuracy == 0f) {
+                    if (loc != null && (accuracy == 0f || loc.accuracy < accuracy)) {
                         val latLng = LatLng(loc.latitude, loc.longitude)
-                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 15f)
+                        cameraPositionState.move(com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(latLng, 17f))
                         markerState.position = latLng
                         accuracy = loc.accuracy
                     }
                 }
                 
-                // Then request a fresh high-accuracy one
+                // Then request a fresh high-accuracy one (Priority 2: Precision)
                 fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                     .addOnSuccessListener { location ->
                         location?.let {
                             val latLng = LatLng(it.latitude, it.longitude)
-                            cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
+                            scope.launch {
+                                cameraPositionState.animate(com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(latLng, 18f))
+                            }
                             markerState.position = latLng
                             accuracy = it.accuracy
                         }
-                    }
-                    .addOnFailureListener { e ->
-                        android.util.Log.e("ShynaDiscovery", "Failed to get current location", e)
                     }
             }
         } catch (e: Exception) {
@@ -184,7 +184,13 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     }
 
     LaunchedEffect(Unit) {
+        delay(500) // Small delay for map to stabilize
         requestSingleUpdate()
+        // If still no accuracy after 2 seconds, force a refresh
+        delay(2000)
+        if (accuracy == 0f) {
+            requestSingleUpdate()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -203,10 +209,10 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
         }
 
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
-                .setMinUpdateIntervalMillis(500L)
-                .setMaxUpdateAgeMillis(5000L) // Allow 5s old data for faster initial fix
-                .setWaitForAccurateLocation(false) // Don't block the first few seconds
+            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L) // Faster polling
+                .setMinUpdateIntervalMillis(250L)
+                .setMaxUpdateAgeMillis(2000L) // Fresher data
+                .setWaitForAccurateLocation(false)
                 .build()
             try {
                 fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, android.os.Looper.getMainLooper())
@@ -260,12 +266,16 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                     .fillMaxWidth()
                     .height(if (isLiveMode) 450.dp else 300.dp)
             ) {
+                val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.ACCESS_FINE_LOCATION
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
                 GoogleMap(
                     modifier = Modifier.fillMaxSize(),
                     cameraPositionState = cameraPositionState,
                     properties = MapProperties(
                         mapStyleOptions = MapStyleOptions(darkMapStyle),
-                        isMyLocationEnabled = true
+                        isMyLocationEnabled = hasPermission
                     ),
                     uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false)
                 ) {
@@ -304,9 +314,25 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         Text(
                             "Accurate to ${accuracy.toInt()} meters",
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            color = Color.White,
-                            fontSize = 12.sp
+                            color = Color(0xFF00E676),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
                         )
+                    }
+                } else {
+                    // Locating indicator
+                    Surface(
+                        modifier = Modifier
+                            .padding(16.dp)
+                            .align(Alignment.BottomStart),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Black.copy(alpha = 0.7f)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = Color(0xFF00E676))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Locating...", color = Color.White, fontSize = 12.sp)
+                        }
                     }
                 }
 
@@ -318,14 +344,14 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         .shadow(4.dp, CircleShape)
                         .background(Color.White, CircleShape)
                         .clickable { 
+                            accuracy = 0f // Force re-detection logic
+                            requestSingleUpdate()
                             if (accuracy > 0) {
                                 scope.launch {
                                     cameraPositionState.animate(
                                         com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(markerState.position, 18f)
                                     )
                                 }
-                            } else {
-                                requestSingleUpdate()
                             }
                         },
                     contentAlignment = Alignment.Center
