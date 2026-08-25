@@ -105,6 +105,7 @@ app.post('/notify-call', verifyToken, async (req, res) => {
   const {
     callId,
     receiverUid,
+    callerUid,
     callerName,
     callType
   } = req.body;
@@ -130,7 +131,8 @@ app.post('/notify-call', verifyToken, async (req, res) => {
       });
     }
 
-    const fcmToken = userDoc.data().fcmToken;
+    const userData = userDoc.data();
+    const fcmToken = userData ? userData.fcmToken : null;
 
     if (!fcmToken) {
       return res.status(404).json({
@@ -142,6 +144,7 @@ app.post('/notify-call', verifyToken, async (req, res) => {
     const message = {
       data: {
         callId: String(callId),
+        callerUid: String(callerUid || ''),
         callerName: String(callerName),
         callType: String(callType),
         type: 'INCOMING_CALL'
