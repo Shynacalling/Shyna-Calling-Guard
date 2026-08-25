@@ -391,10 +391,17 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                             }
                         }
                     } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) {
+                            Log.d("ShynaCall", "[DEBUG] Join coroutine cancelled normally")
+                            return@launch
+                        }
+
                         Log.e("ShynaCall", "[FATAL] Join Room Failed: ${e.message}", e)
-                        // Don't call onExit() immediately for every small failure
-                        // But for Join failure, we must inform the user and close
-                        Toast.makeText(context, "Call connection failed", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            "Call connection failed",
+                            Toast.LENGTH_SHORT
+                        ).show()
                         onExit()
                     } finally {
                         isJoining = false

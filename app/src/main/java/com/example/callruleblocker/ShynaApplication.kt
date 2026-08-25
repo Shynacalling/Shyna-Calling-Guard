@@ -35,6 +35,11 @@ class ShynaApplication : Application() {
                     Log.e("ShynaApplication", "Cloudinary Init Error: ${t.message}")
                 }
             }
+
+            // Initialize Google Places SDK
+            if (!com.google.android.libraries.places.api.Places.isInitialized()) {
+                com.google.android.libraries.places.api.Places.initialize(this, "AIzaSyCN4fFi1IDkR2BYmjybqn0bzuu598i-A9U")
+            }
         } catch (e: Exception) {
             Log.e("ShynaApplication", "Global Application Crash Protected", e)
         }

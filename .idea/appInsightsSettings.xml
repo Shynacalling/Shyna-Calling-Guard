@@ -6,6 +6,14 @@
         <entry key="Firebase Crashlytics">
           <value>
             <InsightsFilterSettings>
+              <option name="connection">
+                <ConnectionSetting>
+                  <option name="appId" value="com.example.callruleblocker" />
+                  <option name="mobileSdkAppId" value="1:118812641303:android:b5495da8132316f3e23452" />
+                  <option name="projectId" value="shyna-calling-guard-14934" />
+                  <option name="projectNumber" value="118812641303" />
+                </ConnectionSetting>
+              </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />
               <option name="timeIntervalDays" value="THIRTY_DAYS" />
               <option name="visibilityType" value="ALL" />

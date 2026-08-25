@@ -1,527 +1,485 @@
 package com.example.callruleblocker.ui
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Location
+import android.net.Uri
+import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.callruleblocker.data.LocationService
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.MapStyleOptions
+import com.google.android.gms.location.*
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.*
+import com.google.android.libraries.places.api.Places
+import com.google.android.libraries.places.api.model.Place
+import com.google.android.libraries.places.api.model.RectangularBounds
+import com.google.android.libraries.places.api.net.FetchPlaceRequest
+import com.google.android.libraries.places.api.net.FindAutocompletePredictionsRequest
+import com.google.android.libraries.places.api.net.FindCurrentPlaceRequest
+import com.google.android.libraries.places.api.net.PlacesClient
 import com.google.maps.android.compose.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.util.*
+
+private const val TAG = "ShynaLocation"
+
+data class ShynaPlace(
+    val id: String,
+    val name: String,
+    val address: String,
+    val latLng: LatLng
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-    
-    var isLiveMode by remember { mutableStateOf(false) }
-    var selectedDuration by remember { mutableStateOf("1 hour") }
-    var comment by remember { mutableStateOf("") }
-    var accuracy by remember { mutableStateOf(0f) }
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val durations = listOf("15 minutes", "1 hour", "7 hours 30 minutes", "8 hours", "24 hours")
+    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+    val placesClient = remember { Places.createClient(context) }
+    val design = ShynaDesign.colors
 
-    val darkMapStyle = """
-        [
-          {
-            "elementType": "geometry",
-            "stylers": [{ "color": "#242f3e" }]
-          },
-          {
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#746855" }]
-          },
-          {
-            "elementType": "labels.text.stroke",
-            "stylers": [{ "color": "#242f3e" }]
-          },
-          {
-            "featureType": "administrative.locality",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#d59563" }]
-          },
-          {
-            "featureType": "poi",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#d59563" }]
-          },
-          {
-            "featureType": "poi.park",
-            "elementType": "geometry",
-            "stylers": [{ "color": "#263c3f" }]
-          },
-          {
-            "featureType": "poi.park",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#6b9a76" }]
-          },
-          {
-            "featureType": "road",
-            "elementType": "geometry",
-            "stylers": [{ "color": "#38414e" }]
-          },
-          {
-            "featureType": "road",
-            "elementType": "geometry.stroke",
-            "stylers": [{ "color": "#212a37" }]
-          },
-          {
-            "featureType": "road",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#9ca5b3" }]
-          },
-          {
-            "featureType": "road.highway",
-            "elementType": "geometry",
-            "stylers": [{ "color": "#746855" }]
-          },
-          {
-            "featureType": "road.highway",
-            "elementType": "geometry.stroke",
-            "stylers": [{ "color": "#1f2835" }]
-          },
-          {
-            "featureType": "road.highway",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#f3d19c" }]
-          },
-          {
-            "featureType": "transit",
-            "elementType": "geometry",
-            "stylers": [{ "color": "#2f3948" }]
-          },
-          {
-            "featureType": "transit.station",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#d59563" }]
-          },
-          {
-            "featureType": "water",
-            "elementType": "geometry",
-            "stylers": [{ "color": "#17263c" }]
-          },
-          {
-            "featureType": "water",
-            "elementType": "labels.text.fill",
-            "stylers": [{ "color": "#515c6d" }]
-          },
-          {
-            "featureType": "water",
-            "elementType": "labels.text.stroke",
-            "stylers": [{ "color": "#17263c" }]
-          }
-        ]
-    """.trimIndent()
+    var isFullscreen by remember { mutableStateOf(false) }
+    var isSearchMode by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<ShynaPlace>>(emptyList()) }
+    
+    var currentLocation by remember { mutableStateOf<Location?>(null) }
+    var accuracy by remember { mutableFloatStateOf(0f) }
+    var isLocating by remember { mutableStateOf(true) }
+    
+    var nearbyPlaces by remember { mutableStateOf<List<ShynaPlace>>(emptyList()) }
+    var selectedPlace by remember { mutableStateOf<ShynaPlace?>(null) }
 
     val cameraPositionState = rememberCameraPositionState {
-        // Default to a broad view (Center of India) instead of a specific city to avoid "wrong state" confusion
         position = CameraPosition.fromLatLngZoom(LatLng(20.5937, 78.9629), 4f)
     }
-    val markerState = rememberMarkerState(position = LatLng(20.5937, 78.9629))
 
-    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            // Permission granted
+    val mapStyle = remember(design.isDark) {
+        if (design.isDark) {
+            MapStyleOptions("""
+                [
+                  { "elementType": "geometry", "stylers": [{ "color": "#242f3e" }] },
+                  { "elementType": "labels.text.fill", "stylers": [{ "color": "#746855" }] },
+                  { "elementType": "labels.text.stroke", "stylers": [{ "color": "#242f3e" }] },
+                  { "featureType": "administrative.locality", "elementType": "labels.text.fill", "stylers": [{ "color": "#d59563" }] },
+                  { "featureType": "poi", "elementType": "labels.text.fill", "stylers": [{ "color": "#d59563" }] },
+                  { "featureType": "poi.park", "elementType": "geometry", "stylers": [{ "color": "#263c3f" }] },
+                  { "featureType": "poi.park", "elementType": "labels.text.fill", "stylers": [{ "color": "#6b9a76" }] },
+                  { "featureType": "road", "elementType": "geometry", "stylers": [{ "color": "#38414e" }] },
+                  { "featureType": "road", "elementType": "geometry.stroke", "stylers": [{ "color": "#212a37" }] },
+                  { "featureType": "road", "elementType": "labels.text.fill", "stylers": [{ "color": "#9ca5b3" }] },
+                  { "featureType": "road.highway", "elementType": "geometry", "stylers": [{ "color": "#746855" }] },
+                  { "featureType": "road.highway", "elementType": "geometry.stroke", "stylers": [{ "color": "#1f2835" }] },
+                  { "featureType": "road.highway", "elementType": "labels.text.fill", "stylers": [{ "color": "#f3d19c" }] },
+                  { "featureType": "transit", "elementType": "geometry", "stylers": [{ "color": "#2f3948" }] },
+                  { "featureType": "transit.station", "elementType": "labels.text.fill", "stylers": [{ "color": "#d59563" }] },
+                  { "featureType": "water", "elementType": "geometry", "stylers": [{ "color": "#17263c" }] },
+                  { "featureType": "water", "elementType": "labels.text.fill", "stylers": [{ "color": "#515c6d" }] },
+                  { "featureType": "water", "elementType": "labels.text.stroke", "stylers": [{ "color": "#17263c" }] }
+                ]
+            """.trimIndent())
+        } else null
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            isLocating = true
+        } else {
+            Toast.makeText(context, "Fine location permission is required for better accuracy", Toast.LENGTH_LONG).show()
         }
     }
 
-    fun requestSingleUpdate() {
-        try {
-            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                // Get Last Location for immediate jump (Priority 1: Speed)
-                fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null && (accuracy == 0f || loc.accuracy < accuracy)) {
-                        val latLng = LatLng(loc.latitude, loc.longitude)
-                        cameraPositionState.move(com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(latLng, 17f))
-                        markerState.position = latLng
-                        accuracy = loc.accuracy
+    fun fetchNearbyPlaces() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+
+        val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION, Place.Field.FORMATTED_ADDRESS)
+        val request = FindCurrentPlaceRequest.newInstance(fields)
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                placesClient.findCurrentPlace(request).addOnSuccessListener { response ->
+                    val list = response.placeLikelihoods.take(8).map { likelihood ->
+                        val place = likelihood.place
+                        ShynaPlace(
+                            id = place.id ?: "",
+                            name = place.displayName ?: "Unknown",
+                            address = place.formattedAddress ?: "Nearby Place",
+                            latLng = place.location ?: LatLng(0.0, 0.0)
+                        )
                     }
-                }
-                
-                // Then request a fresh high-accuracy one (Priority 2: Precision)
-                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                    .addOnSuccessListener { location ->
-                        location?.let {
-                            val latLng = LatLng(it.latitude, it.longitude)
-                            scope.launch {
-                                cameraPositionState.animate(com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(latLng, 18f))
-                            }
-                            markerState.position = latLng
-                            accuracy = it.accuracy
+                    nearbyPlaces = list
+                }.addOnFailureListener {
+                    Log.e(TAG, "FindCurrentPlace failed", it)
+                    currentLocation?.let { loc ->
+                        val bias = RectangularBounds.newInstance(
+                            LatLng(loc.latitude - 0.01, loc.longitude - 0.01),
+                            LatLng(loc.latitude + 0.01, loc.longitude + 0.01)
+                        )
+                        val autoRequest = FindAutocompletePredictionsRequest.builder()
+                            .setQuery("restaurant") 
+                            .setLocationBias(bias)
+                            .build()
+                        placesClient.findAutocompletePredictions(autoRequest).addOnSuccessListener { autoRes ->
+                             nearbyPlaces = autoRes.autocompletePredictions.take(5).map {
+                                 ShynaPlace(it.placeId, it.getPrimaryText(null).toString(), it.getSecondaryText(null).toString(), LatLng(loc.latitude, loc.longitude))
+                             }
                         }
                     }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Nearby places failed", e)
             }
-        } catch (e: Exception) {
-            android.util.Log.e("ShynaDiscovery", "Location request exception", e)
         }
+    }
+
+    fun updateLocation(location: Location) {
+        currentLocation = location
+        accuracy = location.accuracy
+        isLocating = false
+        val latLng = LatLng(location.latitude, location.longitude)
+        
+        if (cameraPositionState.position.target.latitude == 20.5937) {
+            scope.launch {
+                cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(latLng, 17f))
+            }
+            fetchNearbyPlaces()
+        }
+    }
+
+    fun requestFreshLocation() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            return
+        }
+        
+        isLocating = true
+        scope.launch {
+            try {
+                val loc = fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                loc?.let { 
+                    updateLocation(it)
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 18f))
+                } ?: run {
+                    val last = fusedLocationClient.lastLocation.await()
+                    last?.let { updateLocation(it) }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Location request failed", e)
+                isLocating = false
+            }
+        }
+    }
+
+    fun performSearch(query: String) {
+        if (query.isBlank()) {
+            searchResults = emptyList()
+            return
+        }
+        val request = FindAutocompletePredictionsRequest.builder()
+            .setQuery(query)
+            .build()
+        
+        placesClient.findAutocompletePredictions(request).addOnSuccessListener { response ->
+            searchResults = response.autocompletePredictions.map { p ->
+                ShynaPlace(p.placeId, p.getPrimaryText(null).toString(), p.getSecondaryText(null).toString(), LatLng(0.0, 0.0))
+            }
+        }.addOnFailureListener {
+            Log.e(TAG, "Search failed", it)
+        }
+    }
+
+    fun selectPlace(shynaPlace: ShynaPlace) {
+        val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION, Place.Field.FORMATTED_ADDRESS)
+        val request = FetchPlaceRequest.newInstance(shynaPlace.id, fields)
+        
+        placesClient.fetchPlace(request).addOnSuccessListener { response ->
+            val place = response.place
+            place.location?.let { latLng ->
+                val finalPlace = shynaPlace.copy(latLng = latLng, address = place.formattedAddress ?: shynaPlace.address)
+                selectedPlace = finalPlace
+                isSearchMode = false
+                searchQuery = ""
+                searchResults = emptyList()
+                scope.launch {
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(latLng, 18f))
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(currentLocation) {
+        currentLocation?.let { fetchNearbyPlaces() }
     }
 
     LaunchedEffect(Unit) {
-        delay(500) // Small delay for map to stabilize
-        requestSingleUpdate()
-        // If still no accuracy after 2 seconds, force a refresh
-        delay(2000)
-        if (accuracy == 0f) {
-            requestSingleUpdate()
-        }
+        requestFreshLocation()
     }
 
-    DisposableEffect(Unit) {
-        val locationCallback = object : com.google.android.gms.location.LocationCallback() {
-            override fun onLocationResult(result: com.google.android.gms.location.LocationResult) {
-                result.lastLocation?.let { location ->
-                    val latLng = LatLng(location.latitude, location.longitude)
-                    // Auto-zoom only on first discovery or if manually requested via accuracy reset
-                    if (accuracy == 0f) {
-                        cameraPositionState.position = CameraPosition.fromLatLngZoom(latLng, 18f)
-                    }
-                    markerState.position = latLng
-                    accuracy = location.accuracy
-                }
-            }
-        }
-
-        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            val locationRequest = com.google.android.gms.location.LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 500L) // Faster polling
-                .setMinUpdateIntervalMillis(250L)
-                .setMaxUpdateAgeMillis(2000L) // Fresher data
-                .setWaitForAccurateLocation(false)
-                .build()
-            try {
-                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, android.os.Looper.getMainLooper())
-            } catch (e: SecurityException) {
-                android.util.Log.e("ShynaDiscovery", "Location updates security exception", e)
-            } catch (e: Exception) {
-                android.util.Log.e("ShynaDiscovery", "Location updates exception", e)
-            }
-        } else {
-            locationPermissionLauncher.launch(arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION))
-        }
-
-        onDispose {
-            fusedLocationClient.removeLocationUpdates(locationCallback)
-        }
+    BackHandler(isSearchMode || isFullscreen) {
+        if (isSearchMode) isSearchMode = false
+        else if (isFullscreen) isFullscreen = false
     }
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = design.PrimaryBg,
         topBar = {
-            TopAppBar(
-                title = { Text("Send location", color = Color.White, fontSize = 20.sp) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back", tint = Color.White)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { /* Search logic */ }) {
-                        Icon(Icons.Outlined.Search, contentDescription = "Search", tint = Color.White)
-                    }
-                    IconButton(onClick = { 
-                        accuracy = 0f
-                        requestSingleUpdate() 
-                    }) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Refresh", tint = Color.White)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF121212))
-            )
+            if (!isSearchMode) {
+                TopAppBar(
+                    title = { Text("Send location", color = design.TextPrimary, fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = design.TextPrimary)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { isSearchMode = true }) {
+                            Icon(Icons.Default.Search, "Search", tint = design.TextPrimary)
+                        }
+                        IconButton(onClick = { requestFreshLocation() }) {
+                            Icon(Icons.Default.Refresh, "Refresh", tint = design.TextPrimary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = design.HeaderBg)
+                )
+            } else {
+                TopAppBar(
+                    title = {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = { 
+                                searchQuery = it
+                                performSearch(it)
+                            },
+                            placeholder = { Text("Search places...", color = design.TextSecondary) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedTextColor = design.TextPrimary,
+                                unfocusedTextColor = design.TextPrimary,
+                                cursorColor = design.BrandGreen
+                            ),
+                            singleLine = true
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { isSearchMode = false; searchQuery = ""; searchResults = emptyList() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel", tint = design.TextPrimary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = design.HeaderBg)
+                )
+            }
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(Color.Black)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(if (isLiveMode) 450.dp else 300.dp)
-            ) {
-                val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                    context, android.Manifest.permission.ACCESS_FINE_LOCATION
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-                GoogleMap(
-                    modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = cameraPositionState,
-                    properties = MapProperties(
-                        mapStyleOptions = MapStyleOptions(darkMapStyle),
-                        isMyLocationEnabled = hasPermission
-                    ),
-                    uiSettings = MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false)
-                ) {
-                    // Marker for selection or static point
-                    if (!isLiveMode) {
-                        Marker(
-                            state = markerState,
-                            title = "Selected Location",
-                            icon = com.google.android.gms.maps.model.BitmapDescriptorFactory.defaultMarker(com.google.android.gms.maps.model.BitmapDescriptorFactory.HUE_RED)
-                        )
-                    }
-                }
-
-                // Map overlays from screenshot
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.fillMaxSize()) {
                 Box(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .align(Alignment.TopStart)
-                        .size(48.dp)
-                        .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
-                        .clickable { },
-                    contentAlignment = Alignment.Center
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(if (isFullscreen) 1f else 0.45f)
                 ) {
-                    Icon(Icons.Outlined.Fullscreen, contentDescription = "Full screen", tint = Color.Black)
-                }
-
-                // Accuracy Overlay
-                if (accuracy > 0) {
-                    Surface(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .align(Alignment.BottomStart),
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color.Black.copy(alpha = 0.7f)
-                    ) {
-                        Text(
-                            "Accurate to ${accuracy.toInt()} meters",
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            color = Color(0xFF00E676),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
+                    val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                    
+                    GoogleMap(
+                        modifier = Modifier.fillMaxSize(),
+                        cameraPositionState = cameraPositionState,
+                        properties = MapProperties(
+                            mapStyleOptions = mapStyle,
+                            isMyLocationEnabled = hasPermission
+                        ),
+                        uiSettings = MapUiSettings(
+                            zoomControlsEnabled = false,
+                            myLocationButtonEnabled = false,
+                            compassEnabled = true
                         )
-                    }
-                } else {
-                    // Locating indicator
-                    Surface(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .align(Alignment.BottomStart),
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color.Black.copy(alpha = 0.7f)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = Color(0xFF00E676))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Locating...", color = Color.White, fontSize = 12.sp)
+                        selectedPlace?.let { p ->
+                            Marker(
+                                state = rememberMarkerState(position = p.latLng),
+                                title = p.name,
+                                snippet = p.address
+                            )
+                        }
+                    }
+
+                    Row(
+                        Modifier.align(Alignment.TopStart).padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(48.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = design.SurfaceBg,
+                            onClick = { isFullscreen = !isFullscreen },
+                            shadowElevation = 4.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, 
+                                    null, tint = design.TextPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).size(54.dp),
+                        shape = CircleShape,
+                        color = design.SurfaceBg,
+                        shadowElevation = 6.dp,
+                        onClick = { requestFreshLocation() }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (isLocating) {
+                                CircularProgressIndicator(Modifier.size(24.dp), color = design.BrandGreen, strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.MyLocation, null, tint = design.BrandGreen, modifier = Modifier.size(28.dp))
+                            }
+                        }
+                    }
+
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = design.HeaderBg.copy(alpha = 0.8f)
+                    ) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (isLocating) {
+                                Text("Finding your location...", color = design.TextPrimary, fontSize = 12.sp)
+                            } else if (accuracy > 0) {
+                                val color = if (accuracy <= 15) design.BrandGreen else Color.Yellow
+                                Text("Accurate to ${accuracy.toInt()} meters", color = color, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            } else {
+                                Text("Waiting for GPS satellites...", color = design.TextSecondary, fontSize = 12.sp)
+                            }
                         }
                     }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .align(Alignment.TopEnd)
-                        .size(52.dp)
-                        .shadow(4.dp, CircleShape)
-                        .background(Color.White, CircleShape)
-                        .clickable { 
-                            accuracy = 0f // Force re-detection logic
-                            requestSingleUpdate()
-                            if (accuracy > 0) {
-                                scope.launch {
-                                    cameraPositionState.animate(
-                                        com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(markerState.position, 18f)
-                                    )
+                if (!isFullscreen) {
+                    Box(Modifier.weight(0.55f).background(design.PrimaryBg)) {
+                        if (isSearchMode) {
+                            LazyColumn(Modifier.fillMaxSize()) {
+                                items(searchResults) { p ->
+                                    PlaceRow(p.name, p.address) { selectPlace(p) }
+                                }
+                                if (searchResults.isEmpty() && searchQuery.isNotBlank()) {
+                                    item {
+                                        Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+                                            Text("No places found", color = design.TextSecondary)
+                                        }
+                                    }
                                 }
                             }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Outlined.MyLocation, contentDescription = "My location", tint = Color(0xFF00E676), modifier = Modifier.size(28.dp))
+                        } else {
+                            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 80.dp)) {
+                                item {
+                                    LocationActionItem(
+                                        title = "Share live location",
+                                        subtitle = "Continuously update your position",
+                                        icon = Icons.Default.WifiTethering,
+                                        iconBg = if(design.isDark) Color.White else Color.Black,
+                                        iconTint = if(design.isDark) Color.Black else Color.White
+                                    ) {
+                                        Toast.makeText(context, "Live Location sharing started", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                
+                                item {
+                                    val isReady = accuracy > 0 && accuracy < 100
+                                    LocationActionItem(
+                                        title = "Send your current location",
+                                        subtitle = if (isReady) "Tap to send pinpoint location" else "Waiting for accurate GPS fix...",
+                                        icon = Icons.Default.MyLocation,
+                                        iconBg = design.HeaderBg,
+                                        iconTint = if (isReady) design.BrandGreen else design.TextSecondary,
+                                        isHighlighted = isReady
+                                    ) {
+                                        if (isReady) {
+                                            val fix = currentLocation!!
+                                            onSendLocation("${fix.latitude},${fix.longitude}|${fix.accuracy.toInt()}")
+                                            onBack()
+                                        } else {
+                                            Toast.makeText(context, "Waiting for high accuracy fix...", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+
+                                item {
+                                    Text("Nearby places", color = design.TextSecondary, fontSize = 14.sp, modifier = Modifier.padding(16.dp))
+                                }
+
+                                items(nearbyPlaces) { p ->
+                                    PlaceRow(p.name, p.address) { selectPlace(p) }
+                                }
+                                
+                                if (nearbyPlaces.isEmpty()) {
+                                    item {
+                                        Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                                            Text("No nearby places found", color = design.TextSecondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-            ) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+            if (selectedPlace != null && !isSearchMode) {
+                FloatingActionButton(
+                    onClick = {
+                        val p = selectedPlace!!
+                        onSendLocation("${p.latLng.latitude},${p.latLng.longitude}|0|${p.name}")
+                        onBack()
+                    },
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
+                    containerColor = design.BrandGreen,
+                    contentColor = if(design.isDark) Color.Black else Color.White,
+                    shape = CircleShape
                 ) {
-                    if (!isLiveMode) {
-                        item {
-                            LocationActionRow(
-                                title = "Share live location",
-                                icon = Icons.Outlined.WifiTethering,
-                                iconBg = Color.White,
-                                iconTint = Color.Black,
-                                onClick = { isLiveMode = true }
-                            )
-                        }
-
-                        item {
-                            Text(
-                                "Nearby places",
-                                color = Color.Gray,
-                                fontSize = 14.sp,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        }
-
-                        item {
-                            val isAccurateEnough = accuracy > 0 && accuracy <= 15
-                            val isPinpoint = accuracy > 0 && accuracy <= 5
-                            
-                            LocationActionRow(
-                                title = "Send your current location",
-                                subtitle = when {
-                                    accuracy == 0f -> "Searching for GPS satellites..."
-                                    isPinpoint -> "Pinpoint accuracy • Accurate to ${accuracy.toInt()} meters"
-                                    accuracy <= 10 -> "High accuracy • Accurate to ${accuracy.toInt()} meters"
-                                    accuracy <= 25 -> "Good accuracy • Accurate to ${accuracy.toInt()} meters"
-                                    else -> "Improving accuracy... (${accuracy.toInt()} meters)"
-                                },
-                                icon = Icons.Outlined.MyLocation,
-                                iconBg = Color.Black,
-                                iconTint = when {
-                                    isPinpoint -> Color(0xFF00E676)
-                                    isAccurateEnough -> Color(0xFF00E676)
-                                    else -> Color.Gray
-                                },
-                                border = isAccurateEnough,
-                                onClick = {
-                                    if (accuracy > 0) {
-                                        if (accuracy > 20) {
-                                            Toast.makeText(context, "Waiting for high accuracy (currently ${accuracy.toInt()}m)...", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            onSendLocation("${markerState.position.latitude},${markerState.position.longitude}|${accuracy.toInt()}")
-                                            onBack()
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "Searching for GPS satellites...", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            )
-                        }
-
-                        val nearbyPlaces = listOf(
-                            "Riya Consultant" to "Sanganer, RJ, IN",
-                            "A52 Mangalam Grand City" to "Mathur Road, Sanganer, 302026, RJ, IN",
-                            "Shreeram tour and travels" to "Galaxy manglam Grand city, Sanganer, 302026...",
-                            "Shree Ram Properties" to "Sanganer, RJ, IN"
-                        )
-
-                        items(nearbyPlaces) { place ->
-                            PlaceRow(place.first, place.second)
-                        }
-                    } else {
-                        item {
-                            Text("Share live location", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        }
-                        item {
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                items(durations) { duration ->
-                                    val isSelected = selectedDuration == duration
-                                    Surface(
-                                        modifier = Modifier.clickable { selectedDuration = duration },
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isSelected) Color(0xFF00E676) else Color(0xFF242424)
-                                    ) {
-                                        Text(
-                                            duration,
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                            color = if (isSelected) Color.Black else Color.Gray,
-                                            fontSize = 14.sp
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        item {
-                            TextField(
-                                value = comment,
-                                onValueChange = { comment = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                placeholder = { Text("Add comment", color = Color.Gray) },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Gray,
-                                    unfocusedIndicatorColor = Color.Gray,
-                                    cursorColor = Color.White,
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-                        }
-                        item {
-                            OutlinedButton(
-                                onClick = { 
-                                    try {
-                                        isLiveMode = false 
-                                        context.stopService(android.content.Intent(context, LocationService::class.java))
-                                    } catch (e: Exception) {
-                                        android.util.Log.e("ShynaDiscovery", "Failed to stop location service", e)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red)
-                            ) {
-                                Text("Stop sharing")
-                            }
-                        }
-                    }
-                }
-
-                if (isLiveMode) {
-                    FloatingActionButton(
-                        onClick = { 
-                            try {
-                                context.startForegroundService(android.content.Intent(context, LocationService::class.java))
-                                onSendLocation("${markerState.position.latitude},${markerState.position.longitude}")
-                                onBack() 
-                            } catch (e: Exception) {
-                                android.util.Log.e("ShynaDiscovery", "Failed to start location service", e)
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && e is android.app.ForegroundServiceStartNotAllowedException) {
-                                    android.widget.Toast.makeText(context, "Cannot start location sharing from background", android.widget.Toast.LENGTH_LONG).show()
-                                } else {
-                                    android.widget.Toast.makeText(context, "Error sharing location: ${e.localizedMessage}", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(24.dp),
-                        containerColor = Color(0xFF00E676),
-                        contentColor = Color.Black,
-                        shape = CircleShape
-                    ) {
-                        Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = "Send")
-                    }
+                    Icon(Icons.AutoMirrored.Outlined.Send, "Send Place")
                 }
             }
         }
@@ -529,62 +487,60 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
 }
 
 @Composable
-fun LocationActionRow(
+private fun LocationActionItem(
     title: String,
-    subtitle: String? = null,
+    subtitle: String,
     icon: ImageVector,
     iconBg: Color,
     iconTint: Color,
-    border: Boolean = false,
-    onClick: () -> Unit = {}
+    isHighlighted: Boolean = false,
+    onClick: () -> Unit
 ) {
+    val design = ShynaDesign.colors
     Row(
-        modifier = Modifier
+        Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .clickable { onClick() }
+            .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
             modifier = Modifier.size(48.dp),
             shape = CircleShape,
             color = iconBg,
-            border = if (border) androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF00E676)) else null
+            border = if (isHighlighted) BorderStroke(2.dp, design.BrandGreen) else null
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(24.dp))
+                Icon(icon, null, tint = iconTint, modifier = Modifier.size(24.dp))
             }
         }
         Spacer(Modifier.width(16.dp))
         Column {
-            Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            if (subtitle != null) {
-                Text(subtitle, color = Color.Gray, fontSize = 13.sp)
-            }
+            Text(title, color = design.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(subtitle, color = design.TextSecondary, fontSize = 13.sp)
         }
     }
 }
 
 @Composable
-fun PlaceRow(name: String, address: String) {
+private fun PlaceRow(name: String, address: String, onClick: () -> Unit) {
+    val design = ShynaDesign.colors
     Row(
-        modifier = Modifier
+        Modifier
             .fillMaxWidth()
-            .clickable { },
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            modifier = Modifier.size(48.dp),
-            shape = CircleShape,
-            color = Color(0xFF242424)
-        ) {
+        Surface(Modifier.size(40.dp), shape = CircleShape, color = design.DividerColor) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Outlined.LocationOn, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.LocationOn, null, tint = design.TextSecondary, modifier = Modifier.size(20.dp))
             }
         }
         Spacer(Modifier.width(16.dp))
         Column {
-            Text(name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Text(address, color = Color.Gray, fontSize = 13.sp)
+            Text(name, color = design.TextPrimary, fontWeight = FontWeight.Medium, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(address, color = design.TextSecondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

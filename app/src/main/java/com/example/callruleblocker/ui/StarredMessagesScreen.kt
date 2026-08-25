@@ -46,7 +46,6 @@ fun StarredMessagesScreen(userId: String, onBack: () -> Unit) {
                     m = msg, 
                     isSelected = false, 
                     isSearchMatch = false, 
-                    isSelectionActive = false, 
                     currentUserId = userId,
                     onLongClick = {}, 
                     onClick = {}, 

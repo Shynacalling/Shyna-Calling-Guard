@@ -2,13 +2,9 @@ package com.example.callruleblocker.ui
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.media.MediaPlayer
 import android.net.Uri
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.provider.OpenableColumns
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -122,7 +118,6 @@ fun VideoMessageBubble(m: UniversalMessage) {
             ) {
                 Icon(Icons.Outlined.PlayArrow, null, tint = Color.White, modifier = Modifier.padding(10.dp))
             }
-            // Duration overlay
             val dur = remember(m.durationMs) {
                 if (m.durationMs > 0) {
                     val sec = m.durationMs / 1000
@@ -173,8 +168,7 @@ fun AudioMessageBubble(m: UniversalMessage) {
 }
 
 @Composable
-fun LocationMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
-    val context = LocalContext.current
+fun LocationMessageBubble(m: UniversalMessage) {
     val loc = m.metadata ?: "0,0"
     val parts = loc.split(",")
     val lat = parts.getOrNull(0)?.toDoubleOrNull() ?: 0.0
@@ -186,15 +180,9 @@ fun LocationMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = fals
             .height(200.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.LightGray)
-            .clickable(enabled = !isSelectionActive) {
-                val gmmIntentUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon")
-                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-                mapIntent.setPackage("com.google.android.apps.maps")
-                context.startActivity(mapIntent)
-            }
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            val mapUrl = "https://maps.googleapis.com/maps/api/staticmap?center=$lat,$lon&zoom=15&size=500x400&markers=color:red%7C$lat,$lon&key=YOUR_API_KEY"
+            val mapUrl = "https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lon}&zoom=15&size=500x400&markers=color:red%7C${lat},${lon}&key=AIzaSyCN4fFi1IDkR2BYmjybqn0bzuu598i-A9U"
             AsyncImage(
                 model = mapUrl,
                 contentDescription = "Map",
@@ -220,7 +208,9 @@ fun LiveLocationMessageBubble(m: UniversalMessage) {
         Spacer(Modifier.width(12.dp))
         Column {
             Text("Live Location", fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
-            Text("Sharing until ${formatChatDate(m.liveLocationExpiry ?: 0)}", fontSize = 12.sp, color = Color.Gray)
+            val expiry = m.liveLocationExpiry ?: 0L
+            val dateStr = remember(expiry) { SimpleDateFormat("dd/MM/yy, HH:mm", Locale.getDefault()).format(Date(expiry)) }
+            Text("Sharing until $dateStr", fontSize = 12.sp, color = Color.Gray)
         }
     }
 }
@@ -239,84 +229,14 @@ fun LinkMessageBubble(m: UniversalMessage) {
 }
 
 @Composable
-fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
+fun DocMessageBubble(m: UniversalMessage) {
     val mContext = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var isDownloading by remember { mutableStateOf(false) }
-
+    val isDownloading = DocInteraction.isDownloading(m.id)
     val ext = remember(m.fileName) { m.fileName?.substringAfterLast(".", "")?.lowercase() ?: "" }
 
-    fun openFile(file: File) {
-        FileOpener.open(mContext, file, m.mimeType)
-    }
-
-    fun downloadAndOpen() {
-        val url = m.metadata ?: return
-        val rawName = m.fileName ?: "attachment_${System.currentTimeMillis()}"
-        val sanitizedName = rawName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        
-        // Final File
-        val finalFile = File(mContext.cacheDir, "${m.id}_$sanitizedName")
-        // Temporary Part File
-        val partFile = File(mContext.cacheDir, "${m.id}_$sanitizedName.part")
-
-        if (finalFile.exists() && finalFile.length() > 0) {
-            openFile(finalFile)
-            return
-        }
-
-        if (isDownloading) return // Prevent duplicate download
-
-        isDownloading = true
-        downloadProgress = 0f
-        
-        scope.launch(Dispatchers.IO) {
-            try {
-                val connection = URL(url).openConnection()
-                connection.connect()
-                val expectedSize = connection.contentLength.toLong()
-                var totalBytesDownloaded = 0L
-                
-                connection.getInputStream().use { input ->
-                    FileOutputStream(partFile).use { output ->
-                        val data = ByteArray(8192)
-                        var count: Int
-                        while (input.read(data).also { count = it } != -1) {
-                            totalBytesDownloaded += count
-                            if (expectedSize > 0) {
-                                downloadProgress = totalBytesDownloaded.toFloat() / expectedSize
-                            }
-                            output.write(data, 0, count)
-                        }
-                        output.flush()
-                    }
-                }
-                
-                withContext(Dispatchers.Main) {
-                    isDownloading = false
-                    // VERIFICATION
-                    if (partFile.exists() && (expectedSize <= 0 || partFile.length() == expectedSize)) {
-                        // ATOMIC FINALIZATION
-                        if (partFile.renameTo(finalFile)) {
-                            com.example.callruleblocker.data.NetworkUsageTracker.track(mContext, "media", received = totalBytesDownloaded)
-                            openFile(finalFile)
-                        } else {
-                            Toast.makeText(mContext, "File finalization failed", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        partFile.delete() // Clean up corrupt/incomplete file
-                        Toast.makeText(mContext, "File verification failed. Please try again.", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isDownloading = false
-                    partFile.delete() // Clean up
-                    Toast.makeText(mContext, "Download failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
+    val fileExists = remember(m.id, m.fileName, isDownloading) {
+        val sanitizedName = m.fileName?.replace(Regex("[^a-zA-Z0-9._-]"), "_") ?: ""
+        File(mContext.cacheDir, "${m.id}_$sanitizedName").exists()
     }
 
     Column(
@@ -324,7 +244,6 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
             .width(250.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(ShynaDesign.colors.SurfaceBg.copy(alpha = 0.5f))
-            .clickable(enabled = !isSelectionActive) { downloadAndOpen() }
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -333,7 +252,7 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
                 ext in listOf("doc", "docx") -> Icons.Default.Description
                 ext in listOf("xls", "xlsx") -> Icons.Default.TableChart
                 ext == "apk" -> Icons.Default.Android
-                else -> Icons.Default.InsertDriveFile
+                else -> Icons.AutoMirrored.Filled.InsertDriveFile
             }
             Box(
                 modifier = Modifier
@@ -357,15 +276,9 @@ fun DocMessageBubble(m: UniversalMessage, isSelectionActive: Boolean = false) {
             }
             
             if (isDownloading) {
-                CircularProgressIndicator(progress = { downloadProgress }, modifier = Modifier.size(24.dp), color = ShynaDesign.colors.BrandGreen, strokeWidth = 2.dp)
-            } else {
-                val fileExists = remember(m.id) {
-                    val sanitizedName = m.fileName?.replace(Regex("[^a-zA-Z0-9._-]"), "_") ?: ""
-                    File(mContext.cacheDir, "${m.id}_$sanitizedName").exists()
-                }
-                if (!fileExists) {
-                    Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
-                }
+                CircularProgressIndicator(modifier = Modifier.size(24.dp), color = ShynaDesign.colors.BrandGreen, strokeWidth = 2.dp)
+            } else if (!fileExists) {
+                Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
             }
         }
     }
@@ -423,8 +336,26 @@ fun PollMessageBubble(m: UniversalMessage, userId: String, onVote: (Int) -> Unit
 
         val totalVotes = m.pollVotes.values.sumOf { it.size }.coerceAtLeast(1)
         val attempts = m.interactionAttempts[userId] ?: 0
-        val isBlocked = attempts >= 2
+        val lastTime = m.lastInteractionTime[userId] ?: 0L
+        val now = System.currentTimeMillis()
         
+        val canInteract = when {
+            attempts < 2 -> true
+            attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
+            else -> false
+        }
+        
+        if (attempts >= 3) {
+            Text("Voted (3/3) - Responses closed", color = ShynaDesign.colors.BrandGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+        } else if (attempts == 2 && !canInteract) {
+            val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
+            val hours = remaining / (1000 * 60 * 60)
+            val minutes = (remaining / (1000 * 60)) % 60
+            Text("Final attempt locked for ${hours}h ${minutes}m", color = Color.Red, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+        } else if (attempts > 0) {
+            Text("Attempt $attempts/3 used", color = ShynaDesign.colors.TextSecondary, fontSize = 10.sp, modifier = Modifier.padding(bottom = 8.dp))
+        }
+
         m.pollOptions.forEachIndexed { index, option ->
             val voters = m.pollVotes[index.toString()] ?: emptyList()
             val hasVoted = voters.contains(userId)
@@ -433,9 +364,9 @@ fun PollMessageBubble(m: UniversalMessage, userId: String, onVote: (Int) -> Unit
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = !isBlocked) { onVote(index) }
+                    .clickable(enabled = canInteract) { onVote(index) }
                     .padding(vertical = 6.dp)
-                    .graphicsLayer { alpha = if (isBlocked && !hasVoted) 0.6f else 1.0f }
+                    .graphicsLayer { alpha = if (!canInteract && !hasVoted) 0.6f else 1.0f }
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = hasVoted, onClick = null, colors = RadioButtonDefaults.colors(selectedColor = ShynaDesign.colors.BrandGreen))
@@ -466,16 +397,34 @@ fun EventMessageBubble(m: UniversalMessage, userId: String, onRSVP: () -> Unit) 
         else -> null
     }
     val attempts = m.interactionAttempts[userId] ?: 0
-    val isBlocked = attempts >= 2
+    val lastTime = m.lastInteractionTime[userId] ?: 0L
+    val now = System.currentTimeMillis()
+    
+    val canInteract = when {
+        attempts < 2 -> true
+        attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
+        else -> false
+    }
+
+    if (attempts >= 3) {
+        Text("RSVP Finalized (3/3)", color = ShynaDesign.colors.BrandGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+    } else if (attempts == 2 && !canInteract) {
+        val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
+        val hours = remaining / (1000 * 60 * 60)
+        val minutes = (remaining / (1000 * 60)) % 60
+        Text("Final change locked for ${hours}h ${minutes}m", color = Color.Red, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+    } else if (attempts > 0) {
+        Text("Attempt $attempts/3 used", color = Color.DarkGray, fontSize = 10.sp, modifier = Modifier.padding(bottom = 8.dp))
+    }
 
     Column(
         modifier = Modifier
             .width(260.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFFFFF8E1))
-            .clickable { onRSVP() }
+            .clickable(enabled = canInteract) { onRSVP() }
             .padding(12.dp)
-            .graphicsLayer { alpha = if (isBlocked) 0.8f else 1.0f }
+            .graphicsLayer { alpha = if (!canInteract) 0.8f else 1.0f }
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Event, null, tint = Color(0xFFFBC02D), modifier = Modifier.size(32.dp))
@@ -518,7 +467,7 @@ fun CallMessageBubble(m: UniversalMessage, onCallAgain: () -> Unit) {
     val status = m.callStatus ?: "ENDED"
     
     val icon = when (status) {
-        "MISSED" -> Icons.Default.PhoneMissed
+        "MISSED" -> Icons.AutoMirrored.Filled.PhoneMissed
         "REJECTED" -> Icons.Default.Block
         else -> if (isVideo) Icons.Default.Videocam else Icons.Default.Call
     }
@@ -567,7 +516,7 @@ fun CallMessageBubble(m: UniversalMessage, onCallAgain: () -> Unit) {
 private fun formatCallDuration(seconds: Long): String {
     val m = seconds / 60
     val s = seconds % 60
-    return String.format("%d:%02d", m, s)
+    return String.format(Locale.getDefault(), "%d:%02d", m, s)
 }
 
 @Composable
@@ -633,12 +582,73 @@ private fun formatFileSize(size: Long): String {
     if (size <= 0) return "0 B"
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
     val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-    return String.format("%.1f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    return String.format(Locale.getDefault(), "%.1f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
 }
 
 private fun formatChatDate(time: Long): String {
     if (time == 0L) return ""
     return SimpleDateFormat("dd/MM/yy, HH:mm", Locale.getDefault()).format(Date(time))
+}
+
+object DocInteraction {
+    private val downloadingIds = mutableStateSetOf<String>()
+    
+    fun isDownloading(id: String) = downloadingIds.contains(id)
+
+    fun downloadAndOpen(context: android.content.Context, scope: kotlinx.coroutines.CoroutineScope, m: UniversalMessage) {
+        val url = m.metadata ?: return
+        val rawName = m.fileName ?: "attachment_${System.currentTimeMillis()}"
+        val sanitizedName = rawName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        
+        val finalFile = File(context.cacheDir, "${m.id}_$sanitizedName")
+        val partFile = File(context.cacheDir, "${m.id}_$sanitizedName.part")
+
+        if (finalFile.exists() && finalFile.length() > 0) {
+            FileOpener.open(context, finalFile, m.mimeType)
+            return
+        }
+
+        if (downloadingIds.contains(m.id)) return
+
+        downloadingIds.add(m.id)
+        
+        scope.launch(Dispatchers.IO) {
+            try {
+                val connection = URL(url).openConnection()
+                connection.connect()
+                val expectedSize = connection.contentLength.toLong()
+                
+                connection.getInputStream().use { input ->
+                    FileOutputStream(partFile).use { output ->
+                        val data = ByteArray(8192)
+                        var count: Int
+                        while (input.read(data).also { count = it } != -1) {
+                            output.write(data, 0, count)
+                        }
+                        output.flush()
+                    }
+                }
+                
+                withContext(Dispatchers.Main) {
+                    downloadingIds.remove(m.id)
+                    if (partFile.exists() && (expectedSize <= 0 || partFile.length() == expectedSize)) {
+                        if (partFile.renameTo(finalFile)) {
+                            FileOpener.open(context, finalFile, m.mimeType)
+                        }
+                    } else {
+                        partFile.delete()
+                        Toast.makeText(context, "File verification failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    downloadingIds.remove(m.id)
+                    partFile.delete()
+                    Toast.makeText(context, "Download failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 }
 
 object FileOpener {

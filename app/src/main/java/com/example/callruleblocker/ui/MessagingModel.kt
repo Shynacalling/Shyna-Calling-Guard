@@ -41,7 +41,10 @@ data class UniversalMessage(
     val caption: String? = null,
     val messageType: MessageType = MessageType.TEXT,
     val time: Long = System.currentTimeMillis(),
-    val status: MessageStatus = MessageStatus.SENT,
+    val status: MessageStatus = MessageStatus.SENDING,
+    val sentAt: Long? = null,
+    val deliveredAt: Long? = null,
+    val readAt: Long? = null,
     val replyToMessageId: String? = null,
     val replyToText: String? = null,
     val isForwarded: Boolean = false,
@@ -53,6 +56,7 @@ data class UniversalMessage(
     val isMine: Boolean = false,
     val isDeleted: Boolean = false,
     val deleteForEveryone: Boolean = false,
+    val deletedFor: List<String> = emptyList(), // list of userIds
     val liveLocationExpiry: Long? = null,
     val isRead: Boolean = false,
     // Professional Attachment Metadata
@@ -74,6 +78,7 @@ data class UniversalMessage(
     val eventLocation: String? = null,
     val eventRSVPs: Map<String, List<String>> = emptyMap(), // status -> list of userIds
     val interactionAttempts: Map<String, Int> = emptyMap(), // userId -> count
+    val lastInteractionTime: Map<String, Long> = emptyMap(), // userId -> timestamp
     // Call Data
     val callId: String? = null,
     val callType: String? = null, // VOICE, VIDEO
@@ -90,7 +95,9 @@ data class ChatRowItem(
     val isPinned: Boolean,
     val isGroup: Boolean = false,
     val messageType: MessageType = MessageType.TEXT,
-    val groupName: String? = null
+    val groupName: String? = null,
+    val lastMessageStatus: MessageStatus = MessageStatus.SENT,
+    val lastMessageMine: Boolean = false
 )
 
 data class UserStatus(
@@ -145,7 +152,8 @@ object PermissionEngine {
     }
     
     fun canDeleteForEveryone(msg: UniversalMessage): Boolean {
-        return msg.isMine && !msg.isDeleted
+        val twoDays = 2 * 24 * 60 * 60 * 1000L
+        return msg.isMine && (System.currentTimeMillis() - msg.time < twoDays) && !msg.isDeleted
     }
 }
 

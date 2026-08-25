@@ -119,7 +119,6 @@ class MainActivity : FragmentActivity() {
                         }
                         "SHYNA_LINK" -> {
                             SmartCommunicationScreen(
-                                initialOnline = true,
                                 onBack = { 
                                     currentScreen = when(CallStateController.primaryFeature.value) {
                                         MainCallType.PHONE_DIALER -> "PHONE_HOME"
@@ -309,6 +308,49 @@ class MainActivity : FragmentActivity() {
                             }
                         } catch (e: Exception) {
                             Log.e("ShynaCall", "Call listener failed on start", e)
+                        }
+                    }
+                }
+
+                // --- ROBUST PRESENCE SYSTEM ---
+                val presenceUser = user
+                val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                if (presenceUser != null) {
+                    DisposableEffect(presenceUser.uid, lifecycleOwner) {
+                        val presenceRef = FirebaseFirestore.getInstance().collection("users").document(presenceUser.uid)
+                        var isForeground = true
+                        
+                        fun syncPresence() {
+                            val isNetworkAvailable = com.example.callruleblocker.data.NetworkDetector.isWifi(context) || 
+                                                     com.example.callruleblocker.data.NetworkDetector.isMobile(context)
+                            
+                            val status = isForeground && isNetworkAvailable
+                            presenceRef.update("isOnline", status, "lastSeen", com.google.firebase.Timestamp.now())
+                        }
+
+                        // Monitor Lifecycle
+                        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                            when (event) {
+                                androidx.lifecycle.Lifecycle.Event.ON_START -> { isForeground = true; syncPresence() }
+                                androidx.lifecycle.Lifecycle.Event.ON_STOP -> { isForeground = false; syncPresence() }
+                                else -> {}
+                            }
+                        }
+                        lifecycleOwner.lifecycle.addObserver(observer)
+                        
+                        // Monitor Network Changes
+                        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                        val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+                            override fun onAvailable(network: android.net.Network) { syncPresence() }
+                            override fun onLost(network: android.net.Network) { syncPresence() }
+                        }
+                        cm.registerDefaultNetworkCallback(networkCallback)
+                        
+                        onDispose {
+                            lifecycleOwner.lifecycle.removeObserver(observer)
+                            cm.unregisterNetworkCallback(networkCallback)
+                            // Final safety check: Go Offline
+                            presenceRef.update("isOnline", false, "lastSeen", com.google.firebase.Timestamp.now())
                         }
                     }
                 }
