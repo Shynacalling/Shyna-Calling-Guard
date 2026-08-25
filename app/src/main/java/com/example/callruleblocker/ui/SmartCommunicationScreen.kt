@@ -696,9 +696,41 @@ private fun SmartCommunicationContent(
             SendLocationScreen(
                 onBack = { showLocationByChatId = null },
                 onSendLocation = { loc ->
-                    val msg = mapOf("text" to "📍 Location", "senderId" to currentUid, "timestamp" to Timestamp.now(), "type" to MessageType.LOCATION.name, "metadata" to loc)
+                    val uid = currentUid ?: return@SendLocationScreen
+                    val isLive = loc.startsWith("LIVE|")
+                    val type = if (isLive) MessageType.LIVE_LOCATION else MessageType.LOCATION
+                    val label = if (isLive) "📍 Live Location" else "📍 Location"
+                    
+                    val msg = mutableMapOf<String, Any>(
+                        "text" to label, 
+                        "senderId" to uid, 
+                        "timestamp" to Timestamp.now(), 
+                        "sentAt" to System.currentTimeMillis(),
+                        "type" to type.name, 
+                        "metadata" to loc,
+                        "status" to MessageStatus.SENT.name
+                    )
+                    
+                    if (isLive) {
+                        val expiry = loc.substringAfter("|").toLongOrNull() ?: (System.currentTimeMillis() + 60 * 60 * 1000L)
+                        msg["liveLocationExpiry"] = expiry
+                        
+                        // Start Background Service for Live Location
+                        val intent = Intent(mContext, com.example.callruleblocker.data.LocationService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            mContext.startForegroundService(intent)
+                        } else {
+                            mContext.startService(intent)
+                        }
+                    }
+
                     db.collection("chats").document(targetId).collection("messages").add(msg)
-                    db.collection("chats").document(targetId).set(mapOf("lastMessage" to "📍 Location", "timestamp" to Timestamp.now()), SetOptions.merge())
+                    db.collection("chats").document(targetId).set(mapOf(
+                        "lastMessage" to label, 
+                        "timestamp" to Timestamp.now(),
+                        "lastStatus" to MessageStatus.SENT.name,
+                        "lastSenderId" to uid
+                    ), SetOptions.merge())
                     showLocationByChatId = null
                 }
             )
@@ -746,6 +778,7 @@ private fun SmartCommunicationContent(
             if (showSearchInChatId == selectedPeerId) showSearchInChatId = null
         } else {
             Scaffold(
+                modifier = Modifier.imePadding(),
                 containerColor = ShynaDesign.colors.PrimaryBg,
                 topBar = {
                     Column(Modifier.background(ShynaDesign.colors.HeaderBg).shadow(4.dp)) {
@@ -1586,14 +1619,14 @@ private fun SmartChatDetailScreen(
         
         val canInteractionNow = when {
             attempts < 2 -> true
-            attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
+            attempts == 2 -> (now - lastTime) >= 5 * 60 * 60 * 1000L
             else -> false
         }
 
         if (attempts >= 3) {
             Toast.makeText(mContext, "Maximum 3 attempts reached. Vote is final.", Toast.LENGTH_SHORT).show()
         } else if (!canInteractionNow) {
-            val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
+            val remaining = 5 * 60 * 60 * 1000L - (now - lastTime)
             val hours = remaining / (1000 * 60 * 60)
             val minutes = (remaining / (1000 * 60)) % 60
             Toast.makeText(mContext, "Vote locked for ${hours}h ${minutes}m", Toast.LENGTH_SHORT).show()
@@ -1638,14 +1671,14 @@ private fun SmartChatDetailScreen(
         
         val canInteractionNow = when {
             attempts < 2 -> true
-            attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
+            attempts == 2 -> (now - lastTime) >= 5 * 60 * 60 * 1000L
             else -> false
         }
 
         if (attempts >= 3) {
             Toast.makeText(mContext, "Maximum 3 attempts reached. RSVP is final.", Toast.LENGTH_SHORT).show()
         } else if (!canInteractionNow) {
-            val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
+            val remaining = 5 * 60 * 60 * 1000L - (now - lastTime)
             val hours = remaining / (1000 * 60 * 60)
             val minutes = (remaining / (1000 * 60)) % 60
             Toast.makeText(mContext, "RSVP locked for ${hours}h ${minutes}m", Toast.LENGTH_SHORT).show()
@@ -1700,11 +1733,12 @@ private fun SmartChatDetailScreen(
     }
 
     // Scroll to bottom logic
-    LaunchedEffect(msgs.size) {
-        if (msgs.isNotEmpty()) {
-            listState.animateScrollToItem(msgs.size - 1)
-        }
-    }
+    // Auto-scroll to bottom handled by reverseLayout = true in LazyColumn
+    // LaunchedEffect(msgs.size) {
+    //    if (msgs.isNotEmpty()) {
+    //        listState.animateScrollToItem(msgs.size - 1)
+    //    }
+    // }
 
 
     if (showRsvpFor != null) {
@@ -2063,7 +2097,7 @@ private fun SmartChatDetailScreen(
             }
 
         val l = db.collection("chats").document(chatId).collection("messages")
-            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.ASCENDING)
+            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .addSnapshotListener { snapshots, _ ->
                 if (snapshots == null) return@addSnapshotListener
                 
@@ -2196,7 +2230,7 @@ private fun SmartChatDetailScreen(
 
                 if (changed || userClearedAt > 0) {
                     scope.launch(Dispatchers.Default) {
-                        val finalMsgs = currentMsgs.filter { it.time >= userClearedAt && !it.deletedFor.contains(userId) }.sortedBy { it.time }
+                        val finalMsgs = currentMsgs.filter { it.time >= userClearedAt && !it.deletedFor.contains(userId) }.sortedByDescending { it.time }
                         withContext(Dispatchers.Main) {
                             msgs.clear()
                             msgs.addAll(finalMsgs)
@@ -2210,7 +2244,8 @@ private fun SmartChatDetailScreen(
         }
     }
 
-    LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
+    // No visible scroll animation on load
+    // LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
 
     var infoMessage by remember { mutableStateOf<UniversalMessage?>(null) }
     
@@ -2299,6 +2334,7 @@ private fun SmartChatDetailScreen(
     }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         topBar = {
             if (isSearchMode) {
                 TopAppBar(
@@ -2654,6 +2690,7 @@ private fun SmartChatDetailScreen(
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(), 
                     state = listState, 
+                    reverseLayout = true,
                     contentPadding = PaddingValues(12.dp)
                 ) {
                     itemsIndexed(
@@ -2661,8 +2698,8 @@ private fun SmartChatDetailScreen(
                         key = { _, it -> it.id }
                     ) { index, m ->
                         val isHighlighted = isSearchMode && searchChatQuery.isNotEmpty() && m.text.contains(searchChatQuery, ignoreCase = true)
-                        val prevMsg = if (index > 0) msgs[index - 1] else null
-                        val showDateDivider = prevMsg == null || !isSameDay(m.time, prevMsg.time)
+                        val olderMsg = if (index < msgs.size - 1) msgs[index + 1] else null
+                        val showDateDivider = olderMsg == null || !isSameDay(m.time, olderMsg.time)
                         
                         Column {
                             if (showDateDivider) {

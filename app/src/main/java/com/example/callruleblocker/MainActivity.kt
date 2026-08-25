@@ -4,7 +4,8 @@ import android.content.Intent
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
-    import androidx.fragment.app.FragmentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -52,6 +53,7 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Log.d("ShynaCall", "MainActivity onCreate started")
 

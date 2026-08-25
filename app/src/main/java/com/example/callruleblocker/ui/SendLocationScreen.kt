@@ -87,6 +87,8 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     
     var nearbyPlaces by remember { mutableStateOf<List<ShynaPlace>>(emptyList()) }
     var selectedPlace by remember { mutableStateOf<ShynaPlace?>(null) }
+    var isMapLoaded by remember { mutableStateOf(false) }
+    var showLiveLocationDialog by remember { mutableStateOf(false) }
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(20.5937, 78.9629), 4f)
@@ -138,31 +140,35 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
         scope.launch(Dispatchers.IO) {
             try {
                 placesClient.findCurrentPlace(request).addOnSuccessListener { response ->
-                    val list = response.placeLikelihoods.take(8).map { likelihood ->
-                        val place = likelihood.place
-                        ShynaPlace(
-                            id = place.id ?: "",
-                            name = place.displayName ?: "Unknown",
-                            address = place.formattedAddress ?: "Nearby Place",
-                            latLng = place.location ?: LatLng(0.0, 0.0)
-                        )
-                    }
+                    val list = response.placeLikelihoods
+                        .sortedByDescending { it.likelihood }
+                        .take(15)
+                        .map { likelihood ->
+                            val place = likelihood.place
+                            ShynaPlace(
+                                id = place.id ?: "",
+                                name = place.displayName ?: "Unknown",
+                                address = place.formattedAddress ?: "Nearby Place",
+                                latLng = place.location ?: LatLng(0.0, 0.0)
+                            )
+                        }
                     nearbyPlaces = list
                 }.addOnFailureListener {
-                    Log.e(TAG, "FindCurrentPlace failed", it)
+                    Log.e(TAG, "FindCurrentPlace failed, trying fallback search", it)
                     currentLocation?.let { loc ->
                         val bias = RectangularBounds.newInstance(
-                            LatLng(loc.latitude - 0.01, loc.longitude - 0.01),
-                            LatLng(loc.latitude + 0.01, loc.longitude + 0.01)
+                            LatLng(loc.latitude - 0.005, loc.longitude - 0.005),
+                            LatLng(loc.latitude + 0.005, loc.longitude + 0.005)
                         )
                         val autoRequest = FindAutocompletePredictionsRequest.builder()
-                            .setQuery("restaurant") 
+                            .setQuery("points of interest") 
                             .setLocationBias(bias)
                             .build()
                         placesClient.findAutocompletePredictions(autoRequest).addOnSuccessListener { autoRes ->
-                             nearbyPlaces = autoRes.autocompletePredictions.take(5).map {
+                             val fallbackList = autoRes.autocompletePredictions.take(10).map {
                                  ShynaPlace(it.placeId, it.getPrimaryText(null).toString(), it.getSecondaryText(null).toString(), LatLng(loc.latitude, loc.longitude))
                              }
+                             nearbyPlaces = fallbackList
                         }
                     }
                 }
@@ -229,20 +235,30 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     }
 
     fun selectPlace(shynaPlace: ShynaPlace) {
-        val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION, Place.Field.FORMATTED_ADDRESS)
-        val request = FetchPlaceRequest.newInstance(shynaPlace.id, fields)
-        
-        placesClient.fetchPlace(request).addOnSuccessListener { response ->
-            val place = response.place
-            place.location?.let { latLng ->
-                val finalPlace = shynaPlace.copy(latLng = latLng, address = place.formattedAddress ?: shynaPlace.address)
-                selectedPlace = finalPlace
-                isSearchMode = false
-                searchQuery = ""
-                searchResults = emptyList()
-                scope.launch {
-                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(latLng, 18f))
+        if (shynaPlace.latLng.latitude == 0.0) {
+            val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION, Place.Field.FORMATTED_ADDRESS)
+            val request = FetchPlaceRequest.newInstance(shynaPlace.id, fields)
+            
+            placesClient.fetchPlace(request).addOnSuccessListener { response ->
+                val place = response.place
+                place.location?.let { latLng ->
+                    val finalPlace = shynaPlace.copy(latLng = latLng, address = place.formattedAddress ?: shynaPlace.address)
+                    selectedPlace = finalPlace
+                    isSearchMode = false
+                    searchQuery = ""
+                    searchResults = emptyList()
+                    scope.launch {
+                        cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(latLng, 18f))
+                    }
                 }
+            }
+        } else {
+            selectedPlace = shynaPlace
+            isSearchMode = false
+            searchQuery = ""
+            searchResults = emptyList()
+            scope.launch {
+                cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(shynaPlace.latLng, 18f))
             }
         }
     }
@@ -258,6 +274,18 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     BackHandler(isSearchMode || isFullscreen) {
         if (isSearchMode) isSearchMode = false
         else if (isFullscreen) isFullscreen = false
+    }
+
+    if (showLiveLocationDialog) {
+        LiveLocationDurationPicker(
+            onDismiss = { showLiveLocationDialog = false },
+            onSelect = { durationMs ->
+                showLiveLocationDialog = false
+                val expiry = System.currentTimeMillis() + durationMs
+                onSendLocation("LIVE|${expiry}")
+                onBack()
+            }
+        )
     }
 
     Scaffold(
@@ -320,19 +348,30 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         .weight(if (isFullscreen) 1f else 0.45f)
                 ) {
                     val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-                    
+                    val mapProperties = remember(hasPermission, isMapLoaded, mapStyle) {
+                        MapProperties(
+                            mapStyleOptions = mapStyle,
+                            isMyLocationEnabled = hasPermission,
+                            isBuildingEnabled = true,
+                            isIndoorEnabled = true,
+                            mapType = MapType.NORMAL
+                        )
+                    }
+                    val mapUiSettings = remember {
+                        MapUiSettings(
+                            zoomControlsEnabled = false,
+                            myLocationButtonEnabled = false,
+                            compassEnabled = true,
+                            mapToolbarEnabled = true
+                        )
+                    }
+
                     GoogleMap(
                         modifier = Modifier.fillMaxSize(),
                         cameraPositionState = cameraPositionState,
-                        properties = MapProperties(
-                            mapStyleOptions = mapStyle,
-                            isMyLocationEnabled = hasPermission
-                        ),
-                        uiSettings = MapUiSettings(
-                            zoomControlsEnabled = false,
-                            myLocationButtonEnabled = false,
-                            compassEnabled = true
-                        )
+                        onMapLoaded = { isMapLoaded = true },
+                        properties = mapProperties,
+                        uiSettings = mapUiSettings
                     ) {
                         selectedPlace?.let { p ->
                             Marker(
@@ -371,7 +410,7 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                         onClick = { requestFreshLocation() }
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            if (isLocating) {
+                            if (isLocating || !isMapLoaded) {
                                 CircularProgressIndicator(Modifier.size(24.dp), color = design.BrandGreen, strokeWidth = 2.dp)
                             } else {
                                 Icon(Icons.Default.MyLocation, null, tint = design.BrandGreen, modifier = Modifier.size(28.dp))
@@ -422,7 +461,7 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                                         iconBg = if(design.isDark) Color.White else Color.Black,
                                         iconTint = if(design.isDark) Color.Black else Color.White
                                     ) {
-                                        Toast.makeText(context, "Live Location sharing started", Toast.LENGTH_SHORT).show()
+                                        showLiveLocationDialog = true
                                     }
                                 }
                                 
@@ -484,6 +523,38 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun LiveLocationDurationPicker(onDismiss: () -> Unit, onSelect: (Long) -> Unit) {
+    val options = listOf(
+        "15 minutes" to 15 * 60 * 1000L,
+        "1 hour" to 60 * 60 * 1000L,
+        "5:00 hours" to 5 * 60 * 60 * 1000L
+    )
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Share Live Location", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text("Participants will see your location in real-time. This feature requires background location access.", fontSize = 14.sp, color = Color.Gray)
+                Spacer(Modifier.height(16.dp))
+                options.forEach { (label, duration) ->
+                    ListItem(
+                        headlineContent = { Text(label) },
+                        modifier = Modifier.clickable { onSelect(duration) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("CANCEL", color = ShynaDesign.colors.BrandGreen) }
+        },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
 }
 
 @Composable
