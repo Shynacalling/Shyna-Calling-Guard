@@ -78,7 +78,7 @@ dependencies {
     implementation("com.google.android.libraries.places:places:5.3.0")
 
     // LiveKit
-    implementation("io.livekit:livekit-android:2.28.0")
+    implementation("io.livekit:livekit-android:2.28.1")
     
     // WorkManager for Backend Tasks
     implementation("androidx.work:work-runtime-ktx:2.10.0")

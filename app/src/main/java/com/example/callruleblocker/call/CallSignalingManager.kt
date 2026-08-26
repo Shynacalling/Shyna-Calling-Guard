@@ -129,6 +129,14 @@ object CallSignalingManager {
             }
     }
 
+    fun updateCallType(callId: String, type: AppCallType) {
+        Log.d(TAG, "UPDATING_CALL_TYPE: id=$callId target=$type")
+        db.collection("app_calls").document(callId)
+            .update("type", type.name)
+            .addOnSuccessListener { Log.d(TAG, "TYPE_UPDATED_SUCCESS: $callId -> $type") }
+            .addOnFailureListener { e -> Log.e(TAG, "TYPE_UPDATE_FAILED: id=$callId error=${e.message}") }
+    }
+
     fun listenToCall(callId: String, onUpdate: (AppCall) -> Unit): ListenerRegistration {
         return db.collection("app_calls").document(callId)
             .addSnapshotListener { snapshot, error ->

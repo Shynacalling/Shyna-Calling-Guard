@@ -943,13 +943,9 @@ fun VoiceCallUI(
                             isActive = false,
                             onClick = { 
                                 Log.d("ShynaCall", "Switching to video call request")
-                                CallSignalingManager.updateCallStatus(call.id, AppCallStatus.CONNECTED) // Keep connected but try to trigger UI refresh if needed
-                                // In a real app we'd send a session modify request. 
-                                // For now, let's just try to publish camera if room is active.
+                                CallSignalingManager.updateCallType(call.id, AppCallType.VIDEO)
                                 scope.launch {
                                     room?.localParticipant?.setCameraEnabled(true)
-                                    // The observer will detect track publication and should switch UI if call.type was updated.
-                                    // Since call.type is fixed in AppCall, we'd need to update it in Firestore too.
                                 }
                                 Toast.makeText(mContext, "Switching to video...", Toast.LENGTH_SHORT).show()
                             }
