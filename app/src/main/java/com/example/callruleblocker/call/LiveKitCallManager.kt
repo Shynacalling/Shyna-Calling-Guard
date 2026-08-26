@@ -113,7 +113,13 @@ class LiveKitCallManager(private val context: Context) {
         
         Log.d("ShynaCall", "ROOM_CONNECT_START url=${LiveKitConfig.URL}")
         try {
-            val r = LiveKit.create(context)
+            val r = LiveKit.create(
+                appContext = context.applicationContext,
+                options = io.livekit.android.RoomOptions(
+                    adaptiveStream = true,
+                    dynacast = true
+                )
+            )
             Log.d("ShynaCall", "RTC_ENGINE_INIT_SUCCESS. Attempting connection to ${LiveKitConfig.URL}")
             
             r.connect(LiveKitConfig.URL, token)
