@@ -93,12 +93,13 @@ object CallSignalingManager {
                 snapshots?.documentChanges?.forEach { dc ->
                     if (dc.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                         val call = dc.document.toObject(AppCall::class.java)
-                        // Verify it's a recent call (within 1 minute) and still ringing
+                        // Verify it's a recent call (within 2 minutes) and still ringing
+                        // Using absolute difference to handle slight clock skews between devices
                         val now = System.currentTimeMillis()
-                        val diff = now - call.timestamp
-                        Log.d(TAG, "FIRESTORE_SIGNAL_RECEIVED: id=${call.id} status=${call.status} diff=${diff}ms")
+                        val diff = Math.abs(now - call.timestamp)
+                        Log.d(TAG, "FIRESTORE_SIGNAL_RECEIVED: id=${call.id} status=${call.status} skew=${now - call.timestamp}ms")
                         
-                        if (call.status == AppCallStatus.RINGING && diff < 60000) {
+                        if (call.status == AppCallStatus.RINGING && diff < 120000) {
                             Log.d(TAG, "INCOMING_CALL_VALIDATED: id=${call.id} caller=${call.callerName}")
                             
                             // Report to Central Controller

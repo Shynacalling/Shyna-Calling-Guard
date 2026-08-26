@@ -85,12 +85,21 @@ class ShynaFCMService : FirebaseMessagingService() {
     }
 
     private fun handleIncomingFcm(callId: String, callerName: String, callType: String) {
-        // ACTIVE_SESSION_CHECK
-        val currentActiveSession = CallStateController.activeSession.value
-        Log.d(TAG, "ACTIVE_SESSION_CHECK ACTIVE_CALL_ID=${currentActiveSession?.callId} ACTIVE_STATE=${currentActiveSession?.state}")
+        // IDEMPOTENT FCM CHECK
+        val activeSession = CallStateController.activeSession.value
+        val currentState = CallStateController.globalState.value
+        
+        val isSameCall = activeSession?.callId == callId
+        // If we are already handling THIS call (ringing or connected), don't show another notification.
+        if (isSameCall && currentState != GlobalCallState.IDLE) {
+            Log.d(TAG, "FCM: Call $callId already active in state $currentState. Ignoring duplicate FCM.")
+            return
+        }
 
-        if (currentActiveSession != null && currentActiveSession.state != GlobalCallState.IDLE && currentActiveSession.callId != callId) {
-            Log.d(TAG, "User Truly Busy: Auto-rejecting DIFFERENT FCM call (ID: $callId, Current: ${currentActiveSession.callId})")
+        // If we are busy with a DIFFERENT call, auto-reject this one.
+        val isTrulyBusy = currentState != GlobalCallState.IDLE && currentState != GlobalCallState.ENDED && !isSameCall
+        if (isTrulyBusy) {
+            Log.d(TAG, "FCM: User Truly Busy with ${activeSession?.callId}. Auto-rejecting $callId.")
             CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED, "user_busy_fcm")
             return
         }

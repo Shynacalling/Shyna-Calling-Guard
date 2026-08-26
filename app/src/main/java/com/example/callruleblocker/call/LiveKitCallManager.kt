@@ -59,6 +59,11 @@ class LiveKitCallManager(private val context: Context) {
 
         try {
             client.newCall(request).execute().use { response ->
+                if (response.code == 401) {
+                    Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=UNAUTHORIZED. Check Render Server Environment Variables (API Key/Secret).")
+                    return@withContext null
+                }
+                
                 if (!response.isSuccessful) {
                     Log.e("ShynaCall", "TOKEN_REQUEST_FAILED code=${response.code} url=$url")
                     return@withContext null
@@ -117,6 +122,9 @@ class LiveKitCallManager(private val context: Context) {
             return r
         } catch (e: Exception) {
             Log.e("ShynaCall", "ROOM_CONNECT_FAILED reason=connection_exception error=${e.message}")
+            if (e.message?.contains("401") == true) {
+                Log.e("ShynaCall", "CRITICAL: LiveKit server rejected token (401). Verify API Key/Secret on Render.")
+            }
             throw e
         }
     }

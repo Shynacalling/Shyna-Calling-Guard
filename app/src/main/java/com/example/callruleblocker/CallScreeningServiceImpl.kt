@@ -4,6 +4,7 @@ import android.telecom.Call
 import android.telecom.CallScreeningService
 import android.os.Build
 import android.util.Log
+import android.content.Context
 import com.example.callruleblocker.data.BlockedCallStore
 import com.example.callruleblocker.data.RuleRepository
 import com.example.callruleblocker.sim.SimSlotResolver
@@ -30,27 +31,33 @@ class CallScreeningServiceImpl : CallScreeningService() {
         }
 
         serviceScope.launch {
+            val advancedPrefs = applicationContext.getSharedPreferences("advanced_feature_control_v5", Context.MODE_PRIVATE)
+            val fastBlockingEnabled = advancedPrefs.getBoolean("feature_fast_blocking", true)
+            val noRingCutEnabled = advancedPrefs.getBoolean("feature_no_ring_cut", true)
+
             // OPTIMIZATION: Immediate pre-check for specific blocked numbers regardless of SIM
             // to ensure "Zero-Ring" blocking for known spammers.
-            val specificBlocked = ruleRepository.blockedSpecificNumbers()
-            val simplifiedNumber = number.filter { it.isDigit() }.takeLast(10)
-            
-            if (specificBlocked.contains(simplifiedNumber)) {
-                Log.d("ShynaCall", "[SCREENING] FAST-BLOCKING (Pre-check): $number")
-                val response = CallResponse.Builder()
-                    .setDisallowCall(true)
-                    .setRejectCall(true)
-                    .setSkipCallLog(true)
-                    .setSkipNotification(true)
-                    .apply {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            setSilenceCall(true)
+            if (fastBlockingEnabled) {
+                val specificBlocked = ruleRepository.blockedSpecificNumbers()
+                val simplifiedNumber = number.filter { it.isDigit() }.takeLast(10)
+                
+                if (specificBlocked.contains(simplifiedNumber)) {
+                    Log.d("ShynaCall", "[SCREENING] FAST-BLOCKING (Pre-check): $number")
+                    val response = CallResponse.Builder()
+                        .setDisallowCall(true)
+                        .setRejectCall(true)
+                        .setSkipCallLog(true)
+                        .setSkipNotification(true)
+                        .apply {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && noRingCutEnabled) {
+                                setSilenceCall(true)
+                            }
                         }
-                    }
-                    .build()
-                respondToCall(callDetails, response)
-                blockedCallStore.record(number, 0) // Record on default slot for fast path
-                return@launch
+                        .build()
+                    respondToCall(callDetails, response)
+                    blockedCallStore.record(number, 0) // Record on default slot for fast path
+                    return@launch
+                }
             }
 
             val decision = runCatching {

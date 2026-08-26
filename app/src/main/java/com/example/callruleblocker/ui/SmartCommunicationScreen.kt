@@ -235,12 +235,22 @@ private fun SmartCommunicationContent(
     var showChannelDetailFor by remember { mutableStateOf<String?>(null) }
     var showFindChannels by remember { mutableStateOf(false) }
     var showSearchInChatId by remember { mutableStateOf<String?>(null) }
+    var showMediaInChatId by remember { mutableStateOf<String?>(null) }
     var forwardingMessage by remember { mutableStateOf<UniversalMessage?>(null) }
     var showNewGroup by remember { mutableStateOf(false) }
     
     var pendingMedia by remember { mutableStateOf<List<Pair<Uri, Boolean>>?>(null) }
     var pendingMediaChatId by remember { mutableStateOf<String?>(null) }
     var isUploading by remember { mutableStateOf(false) }
+    var showNetworkUsageOverlay by remember { mutableStateOf(false) }
+
+    // Safety reset for isUploading
+    LaunchedEffect(isUploading) {
+        if (isUploading) {
+            delay(60000L) // 1 minute timeout
+            isUploading = false
+        }
+    }
     
     var pendingGalleryChatId by remember { mutableStateOf<String?>(null) }
     val galleryPermissionLauncher = rememberLauncherForActivityResult(
@@ -286,6 +296,7 @@ private fun SmartCommunicationContent(
     val recentChats = remember { mutableStateListOf<ChatRowItem>() }
     val allStatuses = remember { mutableStateListOf<UserStatus>() }
     val allChannels = remember { mutableStateListOf<ShynaChannel>() }
+    val chatDeletedAtMap = remember { mutableStateMapOf<String, Long>() }
     
     var privacySettings by remember { mutableStateOf(UserPrivacySettings()) }
     var storageSettings by remember { mutableStateOf(UserStorageSettings()) }
@@ -426,6 +437,14 @@ private fun SmartCommunicationContent(
                 }
             }
         }
+
+        // Listen to Chat Settings (to handle Deleted chats)
+        val settingsGlobalListener = db.collection("users").document(uid).collection("chatSettings")
+            .addSnapshotListener { snapshots, _ ->
+                snapshots?.documents?.forEach { d ->
+                    chatDeletedAtMap[d.id] = d.getTimestamp("deletedAt")?.toDate()?.time ?: 0L
+                }
+            }
 
         // Listen to Chats (Optimized with Delta Updates)
         val chatListener = db.collection("chats")
@@ -774,10 +793,12 @@ private fun SmartCommunicationContent(
                 drafts = drafts,
                 onUploadingChange = { isUploading = it },
                 initialSearchMode = showSearchInChatId == selectedPeerId,
+                initialShowMedia = showMediaInChatId == selectedPeerId,
                 onForward = { forwardingMessage = it }
             )
-            // Reset search trigger
+            // Reset triggers
             if (showSearchInChatId == selectedPeerId) showSearchInChatId = null
+            if (showMediaInChatId == selectedPeerId) showMediaInChatId = null
         } else {
             Scaffold(
                 modifier = Modifier.imePadding(),
@@ -899,50 +920,59 @@ private fun SmartCommunicationContent(
             ) { p ->
                 Box(Modifier.padding(p).fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
                     when (selectedTab) {
-                        LinkTab.CHATS -> ChatsList(
-                            users = allUsers, 
-                            query = search, 
-                            filter = selectedFilter, 
-                            favourites = favouriteChatIds, 
-                            archived = archivedChatIds, 
-                            recentChats = recentChats, 
-                            customLists = customLists, 
-                            isArchivedMode = archivedOpen,
-                            onOpen = { selectedPeerId = it },
-                            onAvatarClick = { showFullDPUser = it },
-                            onToggleFav = { id -> 
-                                if (favouriteChatIds.contains(id)) favouriteChatIds.remove(id) 
-                                else favouriteChatIds.add(id)
-                                saveFavs()
-                            },
-                            onArchive = { id ->
-                                val uid = currentUid ?: return@ChatsList
-                                archivedChatIds.add(id)
-                                db.collection("users").document(uid).collection("archivedChats").document(id).set(mapOf("archived" to true, "timestamp" to Timestamp.now()))
-                                saveArchived()
-                            },
-                            onUnarchive = { id ->
-                                val uid = currentUid ?: return@ChatsList
-                                archivedChatIds.remove(id)
-                                db.collection("users").document(uid).collection("archivedChats").document(id).delete()
-                                saveArchived()
-                            },
-                            onMarkUnread = { id -> 
-                                val uid = currentUid ?: return@ChatsList
-                                db.collection("chats").document(id).update("unreadCount_$uid", 1) 
-                            },
-                            onDeleteChat = { id -> 
-                                db.collection("chats").document(id).delete()
-                                if (archivedChatIds.contains(id)) {
-                                    archivedChatIds.remove(id)
-                                    saveArchived()
-                                }
-                                if (favouriteChatIds.contains(id)) {
-                                    favouriteChatIds.remove(id)
-                                    saveFavs()
+                        LinkTab.CHATS -> {
+                            val filteredChats by remember(recentChats) {
+                                derivedStateOf {
+                                    recentChats.filter { it.time >= (chatDeletedAtMap[it.id] ?: 0L) }
                                 }
                             }
-                        )
+                            ChatsList(
+                                users = allUsers, 
+                                query = search, 
+                                filter = selectedFilter, 
+                                favourites = favouriteChatIds, 
+                                archived = archivedChatIds, 
+                                recentChats = filteredChats, 
+                                customLists = customLists, 
+                                isArchivedMode = archivedOpen,
+                                onOpen = { selectedPeerId = it },
+                                onAvatarClick = { showFullDPUser = it },
+                                onToggleFav = { id -> 
+                                    if (favouriteChatIds.contains(id)) favouriteChatIds.remove(id) 
+                                    else favouriteChatIds.add(id)
+                                    saveFavs()
+                                },
+                                onArchive = { id ->
+                                    val uid = currentUid ?: return@ChatsList
+                                    archivedChatIds.add(id)
+                                    db.collection("users").document(uid).collection("archivedChats").document(id).set(mapOf("archived" to true, "timestamp" to Timestamp.now()))
+                                    saveArchived()
+                                },
+                                onUnarchive = { id ->
+                                    val uid = currentUid ?: return@ChatsList
+                                    archivedChatIds.remove(id)
+                                    db.collection("users").document(uid).collection("archivedChats").document(id).delete()
+                                    saveArchived()
+                                },
+                                onMarkUnread = { id -> 
+                                    val uid = currentUid ?: return@ChatsList
+                                    db.collection("chats").document(id).update("unreadCount_$uid", 1) 
+                                },
+                                onDeleteChat = { id -> 
+                                    val uid = currentUid ?: return@ChatsList
+                                    db.collection("users").document(uid).collection("chatSettings").document(id)
+                                        .set(mapOf("deletedAt" to Timestamp.now()), SetOptions.merge())
+                                    if (archivedChatIds.contains(id)) {
+                                        archivedChatIds.remove(id)
+                                        saveArchived()
+                                    }
+                                    if (favouriteChatIds.contains(id)) {
+                                        favouriteChatIds.remove(id)
+                                        saveFavs()
+                                    }
+                                }
+                            )
+                        }
                         LinkTab.UPDATES -> UpdatesPage(
                             currentUser = allUsers.find { it.uid == currentUid },
                             allUsers = allUsers,
@@ -1008,12 +1038,19 @@ private fun SmartCommunicationContent(
                                     onUpdateStorage = { storageSettings = it; db.collection("users").document(currentUid!!).collection("settings").document("storage").set(it) },
                                     onLogout = { auth.signOut(); onBack() },
                                     onOpenStarred = { showStarredMessages = true },
-                                    onEditProfile = { showProfileEdit = true }
+                                    onEditProfile = { showProfileEdit = true },
+                                    onOpenNetworkUsage = { showNetworkUsageOverlay = true }
                                 )
                             }
                         }
                     }
                 }
+            }
+        }
+
+        if (showNetworkUsageOverlay) {
+            Box(Modifier.fillMaxSize().background(ShynaDesign.colors.PrimaryBg).clickable(enabled = false) {}) {
+                NetworkUsageScreen(onBack = { showNetworkUsageOverlay = false })
             }
         }
 
@@ -1144,6 +1181,11 @@ private fun SmartCommunicationContent(
                 onSearchInChat = {
                     selectedPeerId = showFullDPUser!!.uid
                     showSearchInChatId = showFullDPUser!!.uid
+                    showFullDPUser = null
+                },
+                onMediaClick = {
+                    selectedPeerId = showFullDPUser!!.uid
+                    showMediaInChatId = showFullDPUser!!.uid
                     showFullDPUser = null
                 }
             )
@@ -1441,6 +1483,7 @@ private fun SmartChatDetailScreen(
     drafts: MutableMap<String, String>,
     onUploadingChange: (Boolean) -> Unit,
     initialSearchMode: Boolean = false,
+    initialShowMedia: Boolean = false,
     onForward: (UniversalMessage) -> Unit = {}
 ) {
     val db = FirebaseFirestore.getInstance()
@@ -1461,14 +1504,18 @@ private fun SmartChatDetailScreen(
     var showUrlDialog by remember { mutableStateOf(false) }
     var showPollDialog by remember { mutableStateOf(false) }
     var showEventDialog by remember { mutableStateOf(false) }
-    var showMediaScoped by remember { mutableStateOf(false) }
+    var showMediaScoped by remember { mutableStateOf(initialShowMedia) }
     var showMuteDialog by remember { mutableStateOf(false) }
+    var showBlockConfirm by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     var showNewGroupScoped by remember { mutableStateOf(false) }
     var showRsvpFor by remember { mutableStateOf<UniversalMessage?>(null) }
     
     var pendingDocument by remember { mutableStateOf<Map<String, Any>?>(null) }
 
-    val onVote: (UniversalMessage, Int) -> Unit = { m, index ->
+    Box(Modifier.fillMaxSize()) {
+        val onVote: (UniversalMessage, Int) -> Unit = { m, index ->
         val attempts = (m.interactionAttempts[userId] ?: 0)
         val lastTime = m.lastInteractionTime[userId] ?: 0L
         val now = System.currentTimeMillis()
@@ -1563,6 +1610,7 @@ private fun SmartChatDetailScreen(
     }
 
     var userClearedAt by remember { mutableLongStateOf(0L) }
+    var userDeletedAt by remember { mutableLongStateOf(0L) }
     
     var isSearchMode by remember { mutableStateOf(initialSearchMode) }
     var searchChatQuery by remember { mutableStateOf("") }
@@ -1876,6 +1924,55 @@ private fun SmartChatDetailScreen(
         )
     }
 
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Clear this chat?", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
+            text = { Text("This will remove all messages from this chat.", color = ShynaDesign.colors.TextSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearConfirm = false
+                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("clearedAt" to Timestamp.now()), SetOptions.merge())
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("CLEAR CHAT", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text("CANCEL", color = ShynaDesign.colors.TextSecondary)
+                }
+            },
+            containerColor = ShynaDesign.colors.SurfaceBg,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete this chat?", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
+            text = { Text("This will remove the chat from your list and all its messages.", color = ShynaDesign.colors.TextSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("deletedAt" to Timestamp.now()), SetOptions.merge())
+                        onBack()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("DELETE CHAT", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("CANCEL", color = ShynaDesign.colors.TextSecondary)
+                }
+            },
+            containerColor = ShynaDesign.colors.SurfaceBg,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
     // Media Launchers
     val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
@@ -1943,15 +2040,17 @@ private fun SmartChatDetailScreen(
             .addSnapshotListener { d, _ -> isMuted = d?.getTimestamp("mutedUntil")?.let { it.toDate().time > System.currentTimeMillis() } ?: false }
     }
 
-    DisposableEffect(chatId) {
+    DisposableEffect(chatId, userClearedAt, userDeletedAt) {
         // Clear unread count when opening chat
         db.collection("chats").document(chatId).update("unreadCount_$userId", 0)
         
         val settingsListener = db.collection("users").document(userId).collection("chatSettings").document(chatId)
             .addSnapshotListener { d, _ ->
                 userClearedAt = d?.getTimestamp("clearedAt")?.toDate()?.time ?: 0L
+                userDeletedAt = d?.getTimestamp("deletedAt")?.toDate()?.time ?: 0L
             }
 
+        msgs.clear()
         val l = db.collection("chats").document(chatId).collection("messages")
             .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
             .addSnapshotListener { snapshots, _ ->
@@ -1963,7 +2062,7 @@ private fun SmartChatDetailScreen(
                 snapshots.documentChanges.forEach { dc ->
                     val d = dc.document
                     val time = d.getTimestamp("timestamp")?.toDate()?.time ?: 0L
-                    if (time < userClearedAt) return@forEach
+                    if (time < userClearedAt || time < userDeletedAt) return@forEach
                     
                     val typeStr = d.getString("type") ?: "TEXT"
                     val mType = try { MessageType.valueOf(typeStr) } catch(_: Exception) { MessageType.TEXT }
@@ -2100,6 +2199,12 @@ private fun SmartChatDetailScreen(
         }
     }
 
+    LaunchedEffect(userClearedAt) {
+        if (userClearedAt > 0) {
+            msgs.removeAll { it.time < userClearedAt }
+        }
+    }
+
     // No visible scroll animation on load
     // LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1) }
 
@@ -2107,49 +2212,6 @@ private fun SmartChatDetailScreen(
     
     if (infoMessage != null) {
         MessageInfoDialog(infoMessage!!) { infoMessage = null }
-    }
-
-    if (showMediaScoped) {
-        MediaScopedScreen(
-            peerName = peer?.name ?: "User",
-            messages = msgs,
-            onBack = { showMediaScoped = false },
-            onMediaClick = { fullScreenMedia = it }
-        )
-    }
-
-    if (showNewGroupScoped && peer != null) {
-        NewGroupScopedScreen(
-            peer = peer,
-            allUsers = allUsers,
-            onBack = { showNewGroupScoped = false },
-            onCreate = { name, uids ->
-                val gId = UUID.randomUUID().toString()
-                val data = mapOf(
-                    "id" to gId,
-                    "name" to name,
-                    "participants" to uids,
-                    "isGroup" to true,
-                    "createdBy" to userId,
-                    "timestamp" to Timestamp.now(),
-                    "lastMessage" to "Group created",
-                    "user1" to userId, // For simple group list query if needed
-                    "user2" to "GROUP"
-                )
-                db.collection("chats").document(gId).set(data)
-                
-                // Add system message
-                val sysMsg = mapOf(
-                    "text" to "You created group \"$name\"",
-                    "senderId" to "SYSTEM",
-                    "timestamp" to Timestamp.now(),
-                    "type" to MessageType.SYSTEM.name
-                )
-                db.collection("chats").document(gId).collection("messages").add(sysMsg)
-                
-                showNewGroupScoped = false
-            }
-        )
     }
 
     if (showMuteDialog) {
@@ -2189,8 +2251,48 @@ private fun SmartChatDetailScreen(
         }
     }
 
-    Scaffold(
-        modifier = Modifier.imePadding(),
+    if (showMediaScoped) {
+        MediaScopedScreen(
+            peerName = peer?.name ?: "User",
+            messages = msgs,
+            onBack = { showMediaScoped = false },
+            onMediaClick = { fullScreenMedia = it }
+        )
+    } else if (showNewGroupScoped && peer != null) {
+        NewGroupScopedScreen(
+            peer = peer,
+            allUsers = allUsers,
+            onBack = { showNewGroupScoped = false },
+            onCreate = { name, uids ->
+                val gId = UUID.randomUUID().toString()
+                val data = mapOf(
+                    "id" to gId,
+                    "name" to name,
+                    "participants" to uids,
+                    "isGroup" to true,
+                    "createdBy" to userId,
+                    "timestamp" to Timestamp.now(),
+                    "lastMessage" to "Group created",
+                    "user1" to userId, // For simple group list query if needed
+                    "user2" to "GROUP"
+                )
+                db.collection("chats").document(gId).set(data)
+                
+                // Add system message
+                val sysMsg = mapOf(
+                    "text" to "You created group \"$name\"",
+                    "senderId" to "SYSTEM",
+                    "timestamp" to Timestamp.now(),
+                    "type" to MessageType.SYSTEM.name
+                )
+                db.collection("chats").document(gId).collection("messages").add(sysMsg)
+                
+                showNewGroupScoped = false
+            }
+        )
+    } else {
+        Scaffold(
+            modifier = Modifier.imePadding(),
         topBar = {
             if (isSearchMode) {
                 TopAppBar(
@@ -2237,20 +2339,31 @@ private fun SmartChatDetailScreen(
                         }
                     },
                     actions = {
+                        val allSelected = msgs.isNotEmpty() && selectedMsgs.size == msgs.size
                         IconButton(onClick = { 
-                            msgs.forEach { if (!selectedMsgs.contains(it.id)) selectedMsgs.add(it.id) }
-                        }) { Icon(Icons.Default.SelectAll, null, tint = ShynaDesign.colors.TextPrimary) }
+                            if (allSelected) {
+                                selectedMsgs.clear()
+                            } else {
+                                msgs.forEach { if (!selectedMsgs.contains(it.id)) selectedMsgs.add(it.id) }
+                            }
+                        }) { 
+                            Icon(if (allSelected) Icons.Default.Deselect else Icons.Default.SelectAll, null, tint = if(allSelected) ShynaDesign.colors.BrandGreen else ShynaDesign.colors.TextPrimary) 
+                        }
 
                         val firstSelId = selectedMsgs.firstOrNull()
                         val firstSelMsg = msgs.find { it.id == firstSelId }
                         
                         if (selectedMsgs.size == 1 && firstSelMsg != null) {
-                            if (firstSelMsg.messageType == MessageType.IMAGE || firstSelMsg.messageType == MessageType.VIDEO || firstSelMsg.messageType == MessageType.DOC || firstSelMsg.messageType == MessageType.LOCATION) {
+                            val type = firstSelMsg.messageType
+                            val isInteractable = type == MessageType.IMAGE || type == MessageType.VIDEO || type == MessageType.DOC || type == MessageType.LOCATION || type == MessageType.LIVE_LOCATION || type == MessageType.LINK
+                            
+                            if (isInteractable) {
                                 IconButton(onClick = { 
                                     val m = firstSelMsg
-                                    if (m.messageType == MessageType.LOCATION) {
+                                    if (m.messageType == MessageType.LOCATION || m.messageType == MessageType.LIVE_LOCATION) {
                                         val loc = m.metadata ?: "0,0"
-                                        val parts = loc.split(",")
+                                        val data = if (m.messageType == MessageType.LIVE_LOCATION) loc.substringBefore("|") else loc
+                                        val parts = data.split(",")
                                         val lat = parts.getOrNull(0)?.toDoubleOrNull() ?: 0.0
                                         val lon = parts.getOrNull(1)?.toDoubleOrNull() ?: 0.0
                                         val gmmIntentUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon")
@@ -2259,6 +2372,13 @@ private fun SmartChatDetailScreen(
                                         mContext.startActivity(mapIntent)
                                     } else if (m.messageType == MessageType.DOC) {
                                         DocInteraction.downloadAndOpen(mContext, scope, m)
+                                    } else if (m.messageType == MessageType.LINK) {
+                                        try {
+                                            val url = if (!m.text.startsWith("http")) "https://${m.text}" else m.text
+                                            mContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                        } catch (e: Exception) {
+                                            Toast.makeText(mContext, "Cannot open link", Toast.LENGTH_SHORT).show()
+                                        }
                                     } else {
                                         fullScreenMedia = m
                                     }
@@ -2498,7 +2618,14 @@ private fun SmartChatDetailScreen(
                                     text = { Text("Clear chat", color = ShynaDesign.colors.TextPrimary) },
                                     onClick = { 
                                         menuExpanded = false
-                                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("clearedAt" to Timestamp.now()), SetOptions.merge())
+                                        showClearConfirm = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete chat", color = Color.Red) },
+                                    onClick = { 
+                                        menuExpanded = false
+                                        showDeleteConfirm = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -2582,6 +2709,7 @@ private fun SmartChatDetailScreen(
                                 isSelected = selectedMsgs.contains(m.id), 
                                 isSearchMatch = isHighlighted,
                                 currentUserId = userId,
+                                isSelectionMode = isSelectionMode,
                                 onLongClick = { 
                                     if (selectedMsgs.contains(m.id)) {
                                         selectedMsgs.remove(m.id)
@@ -2757,171 +2885,203 @@ private fun SmartChatDetailScreen(
                 EmojiPicker(onEmojiSelected = { text += it })
             }
         }
+
+        // --- OVERLAYS ON TOP OF SCAFFOLD ---
+        if (showMediaScoped) {
+            MediaScopedScreen(
+                peerName = peer?.name ?: "User",
+                messages = msgs,
+                onBack = { showMediaScoped = false },
+                onMediaClick = { fullScreenMedia = it }
+            )
+        }
     }
 }
+}
+}
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun PremiumMessageBubble(
-    m: UniversalMessage, 
-    isSelected: Boolean, 
-    isSearchMatch: Boolean = false,
-    currentUserId: String = "",
-    onLongClick: () -> Unit,
-    onClick: () -> Unit,
-    onMediaClick: (UniversalMessage) -> Unit,
-    onPollVote: (Int) -> Unit = {},
-    onEventRSVP: () -> Unit = {},
-    onCallAgain: (UniversalMessage) -> Unit = {}
-) {
-    val align = if (m.isMine) Alignment.CenterEnd else Alignment.CenterStart
-    val color = when {
-        isSelected -> ShynaDesign.colors.SelectionOverlay
-        isSearchMatch -> ShynaDesign.colors.BrandGreen.copy(alpha = 0.3f)
-        else -> Color.Transparent
-    }
-    val displayTime = m.editedAt ?: m.time
-    val timeStr = remember(displayTime) { 
-        try { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(displayTime)) }
-        catch(e: Exception) { "" }
-    }
-    
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(color)
-            .padding(horizontal = 16.dp, vertical = 4.dp), 
-        contentAlignment = align
+
+    @OptIn(ExperimentalFoundationApi::class)
+    @Composable
+    fun PremiumMessageBubble(
+        m: UniversalMessage, 
+        isSelected: Boolean, 
+        isSearchMatch: Boolean = false,
+        currentUserId: String = "",
+        isSelectionMode: Boolean = false,
+        onLongClick: () -> Unit,
+        onClick: () -> Unit,
+        onMediaClick: (UniversalMessage) -> Unit,
+        onPollVote: (Int) -> Unit = {},
+        onEventRSVP: () -> Unit = {},
+        onCallAgain: (UniversalMessage) -> Unit = {}
     ) {
-        Surface(
-            color = if (m.isMine) ShynaDesign.colors.OutgoingBubble else ShynaDesign.colors.IncomingBubble,
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = if (m.isMine) 16.dp else 2.dp, bottomEnd = if (m.isMine) 2.dp else 16.dp),
-            shadowElevation = 1.dp,
-            modifier = Modifier.pointerInput(Unit) {
-                detectTapGestures(
-                    onLongPress = { onLongClick() },
-                    onTap = { 
-                        // Professional: Single click selects the message and shows contextual actions
-                        onClick() 
-                        // If it's already selected and is media, maybe open it? 
-                        // But following user's exact instruction: "click karo woh select aye"
-                    },
-                    onDoubleTap = {
-                        // Double tap to open media/docs for convenience
-                        if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || (m.messageType == MessageType.DOC && m.metadata != null)) {
-                            onMediaClick(m)
+        // Handle SYSTEM message
+        if (m.messageType == MessageType.SYSTEM) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (isSelected) ShynaDesign.colors.SelectionOverlay else Color.Transparent)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onLongPress = { onLongClick() },
+                            onTap = { onClick() }
+                        )
+                    }
+                    .padding(vertical = 8.dp), 
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(color = ShynaDesign.colors.HeaderBg.copy(0.5f), shape = CircleShape) {
+                    Text(m.text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary)
+                }
+            }
+            return
+        }
+
+        val align = if (m.isMine) Alignment.CenterEnd else Alignment.CenterStart
+        val color = when {
+            isSelected -> ShynaDesign.colors.SelectionOverlay
+            isSearchMatch -> ShynaDesign.colors.BrandGreen.copy(alpha = 0.3f)
+            else -> Color.Transparent
+        }
+        val displayTime = m.editedAt ?: m.time
+        val timeStr = remember(displayTime) { 
+            try { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(displayTime)) }
+            catch(e: Exception) { "" }
+        }
+        
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(color)
+                .padding(horizontal = 16.dp, vertical = 4.dp), 
+            contentAlignment = align
+        ) {
+            Surface(
+                color = if (m.isMine) ShynaDesign.colors.OutgoingBubble else ShynaDesign.colors.IncomingBubble,
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = if (m.isMine) 16.dp else 2.dp, bottomEnd = if (m.isMine) 2.dp else 16.dp),
+                shadowElevation = 1.dp,
+                modifier = Modifier.pointerInput(Unit) {
+                    detectTapGestures(
+                        onLongPress = { onLongClick() },
+                        onTap = { 
+                            onClick() 
+                        },
+                        onDoubleTap = {
+                            if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || (m.messageType == MessageType.DOC && m.metadata != null)) {
+                                onMediaClick(m)
+                            }
+                        }
+                    )
+                }
+            ) {
+                val contentPadding = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 0.dp else 10.dp
+                Column(Modifier.padding(contentPadding)) {
+                    if (m.isForwarded) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 10.dp, top = 10.dp, bottom = 4.dp)) {
+                            Icon(Icons.Default.Reply, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(12.dp).graphicsLayer(scaleX = -1f))
+                            Text("Forwarded", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
                         }
                     }
-                )
-            }
-        ) {
-            val contentPadding = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 0.dp else 10.dp
-            Column(Modifier.padding(contentPadding)) {
-                if (m.isForwarded) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 10.dp, top = 10.dp, bottom = 4.dp)) {
-                        Icon(Icons.Default.Reply, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(12.dp).graphicsLayer(scaleX = -1f))
-                        Text("Forwarded", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
-                    }
-                }
-                
-                if (m.replyToText != null) {
-                    Surface(
-                        color = Color.Black.copy(0.05f),
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).fillMaxWidth()
-                    ) {
-                        Row(Modifier.height(IntrinsicSize.Min)) {
-                            Box(Modifier.width(3.dp).fillMaxHeight().background(ShynaDesign.colors.BrandGreen))
-                            Column(Modifier.padding(8.dp)) {
-                                Text("Reply", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 12.sp)
-                                Text(m.replyToText, color = ShynaDesign.colors.TextSecondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    
+                    if (m.replyToText != null) {
+                        Surface(
+                            color = Color.Black.copy(0.05f),
+                            shape = RoundedCornerShape(4.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).fillMaxWidth()
+                        ) {
+                            Row(Modifier.height(IntrinsicSize.Min)) {
+                                Box(Modifier.width(3.dp).fillMaxHeight().background(ShynaDesign.colors.BrandGreen))
+                                Column(Modifier.padding(8.dp)) {
+                                    Text("Reply", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 12.sp)
+                                    Text(m.replyToText, color = ShynaDesign.colors.TextSecondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         }
                     }
-                }
 
-                if (m.deleteForEveryone) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
-                        Icon(Icons.Default.Block, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("This message was deleted", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = ShynaDesign.colors.TextSecondary, fontSize = 14.sp)
+                    if (m.deleteForEveryone) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
+                            Icon(Icons.Default.Block, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("This message was deleted", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = ShynaDesign.colors.TextSecondary, fontSize = 14.sp)
+                        }
+                    } else {
+                        when (m.messageType) {
+                            MessageType.TEXT -> TextMessageBubble(m)
+                            MessageType.IMAGE -> ImageMessageBubble(m)
+                            MessageType.VIDEO -> VideoMessageBubble(m)
+                            MessageType.VOICE -> VoiceMessageBubble(m)
+                            MessageType.AUDIO -> AudioMessageBubble(m)
+                            MessageType.LOCATION -> LocationMessageBubble(m)
+                            MessageType.LIVE_LOCATION -> LiveLocationMessageBubble(m)
+                            MessageType.LINK -> LinkMessageBubble(m)
+                            MessageType.DOC -> DocMessageBubble(m)
+                            MessageType.CONTACT -> ContactMessageBubble(m)
+                            MessageType.EVENT -> EventMessageBubble(m, currentUserId, isSelectionMode, onEventRSVP)
+                            MessageType.POLL -> PollMessageBubble(m, currentUserId, isSelectionMode, onPollVote)
+                            MessageType.CALL -> CallMessageBubble(m, isSelectionMode) { onCallAgain(m) }
+                            else -> TextMessageBubble(m)
+                        }
                     }
-                } else {
-                    when (m.messageType) {
-                        MessageType.TEXT -> TextMessageBubble(m)
-                        MessageType.IMAGE -> ImageMessageBubble(m)
-                        MessageType.VIDEO -> VideoMessageBubble(m)
-                        MessageType.VOICE -> VoiceMessageBubble(m)
-                        MessageType.AUDIO -> AudioMessageBubble(m)
-                        MessageType.LOCATION -> LocationMessageBubble(m)
-                        MessageType.LIVE_LOCATION -> LiveLocationMessageBubble(m)
-                        MessageType.LINK -> LinkMessageBubble(m)
-                        MessageType.DOC -> DocMessageBubble(m)
-                        MessageType.CONTACT -> ContactMessageBubble(m)
-                        MessageType.EVENT -> EventMessageBubble(m, currentUserId, onEventRSVP)
-                        MessageType.POLL -> PollMessageBubble(m, currentUserId, onPollVote)
-                        MessageType.CALL -> CallMessageBubble(m) { onCallAgain(m) }
-                        else -> TextMessageBubble(m)
-                    }
-                }
 
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .padding(
-                            top = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 0.dp else 4.dp,
-                            bottom = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 8.dp else 0.dp,
-                            end = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 12.dp else 0.dp
-                        ),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (m.isStarred) Icon(Icons.Default.Star, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(10.dp).padding(end = 4.dp))
-                    if (m.editedAt != null && !m.deleteForEveryone) {
-                        Text("edited", fontSize = 10.sp, color = ShynaDesign.colors.TextSecondary, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.End)
+                            .padding(
+                                top = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 0.dp else 4.dp,
+                                bottom = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 8.dp else 0.dp,
+                                end = if (m.messageType == MessageType.IMAGE || m.messageType == MessageType.VIDEO || m.messageType == MessageType.LOCATION) 12.dp else 0.dp
+                            ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (m.isStarred) Icon(Icons.Default.Star, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(10.dp).padding(end = 4.dp))
+                        if (m.editedAt != null && !m.deleteForEveryone) {
+                            Text("edited", fontSize = 10.sp, color = ShynaDesign.colors.TextSecondary, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(timeStr, fontSize = 10.sp, color = ShynaDesign.colors.TextSecondary)
                         Spacer(Modifier.width(4.dp))
+                        MessageStatusTicks(m.status, m.isMine)
                     }
-                    Text(timeStr, fontSize = 10.sp, color = ShynaDesign.colors.TextSecondary)
-                    Spacer(Modifier.width(4.dp))
-                    MessageStatusTicks(m.status, m.isMine)
                 }
             }
-        }
 
-        if (isSelected) {
+            if (isSelected) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .background(ShynaDesign.colors.BrandGreen.copy(alpha = 0.1f))
+                    .background(ShynaDesign.colors.SelectionOverlay)
             ) {
                 Surface(
-                    modifier = Modifier.align(Alignment.Center).size(32.dp),
+                    modifier = Modifier.align(if(m.isMine) Alignment.CenterStart else Alignment.CenterEnd).padding(horizontal = 8.dp).size(24.dp),
                     shape = CircleShape,
                     color = ShynaDesign.colors.BrandGreen
                 ) {
-                    Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.padding(6.dp))
+                    Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.padding(4.dp))
                 }
             }
         }
-        
-        if (m.reactions.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .align(if (m.isMine) Alignment.BottomEnd else Alignment.BottomStart)
-                    .offset(y = 12.dp, x = if (m.isMine) (-12).dp else 12.dp)
-                    .background(ShynaDesign.colors.SurfaceBg, CircleShape)
-                    .border(1.dp, ShynaDesign.colors.DividerColor, CircleShape)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                m.reactions.values.distinct().take(3).forEach { emoji ->
-                    Text(emoji, fontSize = 12.sp)
-                }
-                if (m.reactions.size > 1) {
-                    Text(m.reactions.size.toString(), fontSize = 10.sp, modifier = Modifier.padding(start = 2.dp), color = ShynaDesign.colors.TextSecondary)
+            
+            if (m.reactions.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .align(if (m.isMine) Alignment.BottomEnd else Alignment.BottomStart)
+                        .offset(y = 12.dp, x = if (m.isMine) (-12).dp else 12.dp)
+                        .background(ShynaDesign.colors.SurfaceBg, CircleShape)
+                        .border(1.dp, ShynaDesign.colors.DividerColor, CircleShape)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    m.reactions.values.distinct().take(3).forEach { emoji ->
+                        Text(emoji, fontSize = 12.sp)
+                    }
+                    if (m.reactions.size > 1) {
+                        Text(m.reactions.size.toString(), fontSize = 10.sp, modifier = Modifier.padding(start = 2.dp), color = ShynaDesign.colors.TextSecondary)
+                    }
                 }
             }
         }
     }
-}
 
 @Composable
 private fun PremiumChatComposer(
@@ -3833,12 +3993,47 @@ private fun PeerDetailScreen(
     auth: FirebaseAuth,
     onBack: () -> Unit,
     onMessage: () -> Unit,
-    onSearchInChat: () -> Unit
+    onSearchInChat: () -> Unit,
+    onMediaClick: () -> Unit
 ) {
     val design = ShynaDesign.colors
     val mContext = LocalContext.current
     val currentUid = auth.currentUser?.uid ?: ""
     val currentUserProfile = allUsers.find { it.uid == currentUid }
+
+    var showBlockConfirm by remember { mutableStateOf(false) }
+
+    if (showBlockConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBlockConfirm = false },
+            title = { 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Block, null, tint = Color.Red)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Block ${user.name}?", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = { Text("Blocked contacts will no longer be able to call you or send you messages.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val currentUid = auth.currentUser?.uid ?: return@Button
+                        db.collection("users").document(currentUid).collection("blockedUsers").document(user.uid)
+                            .set(mapOf("blockedAt" to Timestamp.now(), "name" to user.name))
+                        Toast.makeText(mContext, "${user.name} blocked", Toast.LENGTH_SHORT).show()
+                        showBlockConfirm = false
+                        onBack()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) { Text("Block", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBlockConfirm = false }) { Text("Cancel", color = design.TextSecondary) }
+            },
+            containerColor = design.SurfaceBg,
+            shape = RoundedCornerShape(28.dp)
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -3929,6 +4124,10 @@ private fun PeerDetailScreen(
             
             Spacer(Modifier.height(16.dp))
             
+            ProfileItem("Media, links, and docs", "View shared files", Icons.Default.PermMedia) {
+                onMediaClick()
+            }
+            
             ProfileItem("Add to Contacts", "Save to your phone", Icons.Outlined.PersonAdd) {
                 val intent = Intent(Intent.ACTION_INSERT).apply {
                     type = ContactsContract.Contacts.CONTENT_TYPE
@@ -3940,12 +4139,7 @@ private fun PeerDetailScreen(
             }
             
             ProfileItem("Block ${user.name}", "Report or block this contact", Icons.Outlined.Block) {
-                // Real block logic
-                val currentUid = auth.currentUser?.uid ?: return@ProfileItem
-                db.collection("users").document(currentUid).collection("blockedUsers").document(user.uid)
-                    .set(mapOf("blockedAt" to Timestamp.now(), "name" to user.name))
-                Toast.makeText(mContext, "${user.name} blocked", Toast.LENGTH_SHORT).show()
-                onBack()
+                showBlockConfirm = true
             }
             
             Spacer(Modifier.height(32.dp))
@@ -4047,7 +4241,7 @@ private fun MediaScopedScreen(
     onBack: () -> Unit,
     onMediaClick: (UniversalMessage) -> Unit
 ) {
-    var selectedTab by remember { mutableStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("MEDIA", "LINKS", "DOCS")
     val scope = rememberCoroutineScope()
 
@@ -4066,131 +4260,121 @@ private fun MediaScopedScreen(
                 selectedTabIndex = selectedTab,
                 containerColor = ShynaDesign.colors.HeaderBg,
                 contentColor = ShynaDesign.colors.BrandGreen,
-                divider = { HorizontalDivider(color = ShynaDesign.colors.DividerColor) }
+                divider = { HorizontalDivider(color = ShynaDesign.colors.DividerColor, thickness = 0.5.dp) }
             ) {
                 tabs.forEachIndexed { index, title ->
                     Tab(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        text = { Text(title, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                        text = { Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                     )
                 }
             }
 
-            when (selectedTab) {
-                0 -> {
-                    val mediaItems = messages.filter { it.messageType == MessageType.IMAGE || it.messageType == MessageType.VIDEO }
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                    ) {
-                        items(mediaItems) { m ->
-                            Box(
-                                modifier = Modifier
-                                    .aspectRatio(1f)
-                                    .clickable { onMediaClick(m) }
+            Box(Modifier.fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
+                when (selectedTab) {
+                    0 -> {
+                        val mediaItems = messages.filter { it.messageType == MessageType.IMAGE || it.messageType == MessageType.VIDEO }
+                        if (mediaItems.isEmpty()) {
+                            EmptyMediaPlaceholder("No media found")
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
-                                AsyncImage(
-                                    model = if (m.messageType == MessageType.VIDEO) m.metadata?.replace("/video/upload/", "/video/upload/w_300,h_300,c_fill,so_0/")?.replace(".mp4", ".jpg") else m.metadata,
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                                if (m.messageType == MessageType.VIDEO) {
-                                    Icon(Icons.Default.PlayCircle, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(24.dp))
+                                items(mediaItems) { m ->
+                                    Box(
+                                        modifier = Modifier
+                                            .aspectRatio(1f)
+                                            .clickable { onMediaClick(m) }
+                                    ) {
+                                        AsyncImage(
+                                            model = if (m.messageType == MessageType.VIDEO) m.metadata?.replace("/video/upload/", "/video/upload/w_300,h_300,c_fill,so_0/")?.replace(".mp4", ".jpg") else m.metadata,
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        if (m.messageType == MessageType.VIDEO) {
+                                            Icon(Icons.Default.PlayCircle, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(24.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    1 -> {
+                        val links = messages.filter { it.messageType == MessageType.LINK || it.text.contains("http", ignoreCase = true) || it.text.contains("www.", ignoreCase = true) }
+                        val mContext = LocalContext.current
+                        if (links.isEmpty()) {
+                            EmptyMediaPlaceholder("No links found")
+                        } else {
+                            LazyColumn(Modifier.fillMaxSize()) {
+                                items(links) { m ->
+                                    ListItem(
+                                        headlineContent = { Text(m.text, color = ShynaDesign.colors.BrandGreen, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                        supportingContent = { Text(formatChatDate(m.time), fontSize = 11.sp) },
+                                        leadingContent = { Surface(Modifier.size(40.dp), CircleShape, color = ShynaDesign.colors.DividerColor) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Link, null, tint = ShynaDesign.colors.TextSecondary) } } },
+                                        modifier = Modifier.clickable { 
+                                            try {
+                                                val url = if (!m.text.startsWith("http")) "https://${m.text}" else m.text
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                mContext.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(mContext, "Cannot open link", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    2 -> {
+                        val docs = messages.filter { it.messageType == MessageType.DOC }
+                        if (docs.isEmpty()) {
+                            EmptyMediaPlaceholder("No documents found")
+                        } else {
+                            LazyColumn(Modifier.fillMaxSize()) {
+                                items(docs) { m ->
+                                    var isDownloading by remember { mutableStateOf(false) }
+                                    var progress by remember { mutableFloatStateOf(0f) }
+                                    
+                                    val mContext = LocalContext.current
+                                    ListItem(
+                                        headlineContent = { Text(m.fileName ?: "Document", color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        supportingContent = { Text("${android.text.format.Formatter.formatFileSize(mContext, m.fileSize)} • ${formatChatDate(m.time)}", color = ShynaDesign.colors.TextSecondary) },
+                                        leadingContent = { 
+                                            if (isDownloading) CircularProgressIndicator(progress = { progress }, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                                            else Icon(Icons.Default.InsertDriveFile, null, tint = ShynaDesign.colors.BrandGreen) 
+                                        },
+                                        trailingContent = { Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(16.dp)) },
+                                        modifier = Modifier.clickable { 
+                                            DocInteraction.downloadAndOpen(mContext, scope, m)
+                                        },
+                                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                    )
                                 }
                             }
                         }
                     }
                 }
-                1 -> {
-                    val links = messages.filter { it.messageType == MessageType.LINK || it.text.startsWith("http") }
-                    val mContext = LocalContext.current
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(links) { m ->
-                            ListItem(
-                                headlineContent = { Text(m.text, color = ShynaDesign.colors.BrandGreen, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                                leadingContent = { Icon(Icons.Default.Link, null, tint = ShynaDesign.colors.TextSecondary) },
-                                modifier = Modifier.clickable { 
-                                    try {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(m.text)).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                        mContext.startActivity(intent)
-                                    } catch (e: Exception) {
-                                        Toast.makeText(mContext, "Cannot open link", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                            )
-                        }
-                    }
-                }
-                2 -> {
-                    val docs = messages.filter { it.messageType == MessageType.DOC }
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(docs) { m ->
-                            var isDownloading by remember { mutableStateOf(false) }
-                            var progress by remember { mutableFloatStateOf(0f) }
-                            
-                            val mContext = LocalContext.current
-                            ListItem(
-                                headlineContent = { Text(m.fileName ?: "Document", color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                supportingContent = { Text(android.text.format.Formatter.formatFileSize(mContext, m.fileSize), color = ShynaDesign.colors.TextSecondary) },
-                                leadingContent = { 
-                                    if (isDownloading) CircularProgressIndicator(progress = { progress }, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                                    else Icon(Icons.Default.InsertDriveFile, null, tint = ShynaDesign.colors.BrandGreen) 
-                                },
-                                trailingContent = { Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(16.dp)) },
-                                modifier = Modifier.clickable { 
-                                    val url = m.metadata ?: return@clickable
-                                    val sanitizedName = (m.fileName ?: "doc").replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                                    val file = File(mContext.cacheDir, sanitizedName)
-                                    
-                                    if (file.exists() && file.length() > 0) {
-                                        FileOpener.open(mContext, file, m.mimeType)
-                                        return@clickable
-                                    }
-
-                                    isDownloading = true
-                                    scope.launch(Dispatchers.IO) {
-                                        try {
-                                            val connection = URL(url).openConnection()
-                                            connection.connect()
-                                            val length = connection.contentLength
-                                            connection.getInputStream().use { input ->
-                                                FileOutputStream(file).use { output ->
-                                                    val data = ByteArray(4096)
-                                                    var total = 0L
-                                                    var count: Int
-                                                    while (input.read(data).also { count = it } != -1) {
-                                                        total += count
-                                                        if (length > 0) progress = total.toFloat() / length
-                                                        output.write(data, 0, count)
-                                                    }
-                                                }
-                                            }
-                                            withContext(Dispatchers.Main) {
-                                                isDownloading = false
-                                                FileOpener.open(mContext, file, m.mimeType)
-                                            }
-                                        } catch (e: Exception) {
-                                            withContext(Dispatchers.Main) {
-                                                isDownloading = false
-                                                Toast.makeText(mContext, "Download failed", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                            )
-                        }
-                    }
-                }
             }
+        }
+    }
+}
+
+@Composable
+private fun EmptyMediaPlaceholder(text: String) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Outlined.FolderOpen, null, modifier = Modifier.size(64.dp), tint = ShynaDesign.colors.DividerColor)
+            Spacer(Modifier.height(16.dp))
+            Text(text, color = ShynaDesign.colors.TextSecondary)
         }
     }
 }
@@ -4305,14 +4489,14 @@ private fun YouPage(
     onUpdateStorage: (UserStorageSettings) -> Unit,
     onLogout: () -> Unit,
     onOpenStarred: () -> Unit,
-    onEditProfile: () -> Unit
+    onEditProfile: () -> Unit,
+    onOpenNetworkUsage: () -> Unit
 ) {
     val mContext = LocalContext.current
     var showStorageSettings by remember { mutableStateOf(false) }
     var showPrivacySettings by remember { mutableStateOf(false) }
     var showAccountSettings by remember { mutableStateOf(false) }
     var showChatSettings by remember { mutableStateOf(false) }
-    var showNetworkUsage by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
     var showInvite by remember { mutableStateOf(false) }
     
@@ -4322,10 +4506,6 @@ private fun YouPage(
             onDismiss = { showStorageSettings = false },
             onSave = onUpdateStorage
         )
-    }
-
-    if (showNetworkUsage) {
-        NetworkUsageScreen(onBack = { showNetworkUsage = false })
     }
 
     if (showPrivacySettings) {
@@ -4362,64 +4542,102 @@ private fun YouPage(
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Box(Modifier.fillMaxWidth().height(180.dp).background(ShynaDesign.premiumGradient()), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(200.dp)
+                .background(ShynaDesign.premiumGradient()), 
+            contentAlignment = Alignment.Center
+        ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box {
                     Surface(
-                        modifier = Modifier.size(90.dp).clickable { onEditProfile() }, 
+                        modifier = Modifier.size(100.dp).clickable { onEditProfile() }, 
                         shape = CircleShape, 
-                        border = BorderStroke(3.dp, ShynaDesign.colors.BrandGreen)
+                        border = BorderStroke(3.dp, Color.White.copy(alpha = 0.5f)),
+                        color = Color.Transparent
                     ) {
-                        if (!user?.photoUrl.isNullOrBlank()) AsyncImage(user?.photoUrl, null, contentScale = ContentScale.Crop)
-                        else Icon(Icons.Default.Person, null, modifier = Modifier.padding(20.dp), tint = ShynaDesign.colors.TextSecondary)
+                        if (!user?.photoUrl.isNullOrBlank()) {
+                            AsyncImage(user?.photoUrl, null, contentScale = ContentScale.Crop)
+                        } else {
+                            Icon(Icons.Default.Person, null, modifier = Modifier.padding(24.dp), tint = Color.White)
+                        }
                     }
                     Box(
-                        Modifier.size(30.dp).align(Alignment.BottomEnd).background(ShynaDesign.colors.BrandGreen, CircleShape).border(2.dp, ShynaDesign.colors.HeaderBg, CircleShape).clickable { onEditProfile() },
+                        Modifier
+                            .size(32.dp)
+                            .align(Alignment.BottomEnd)
+                            .background(ShynaDesign.colors.BrandGreen, CircleShape)
+                            .border(2.dp, Color.White, CircleShape)
+                            .clickable { onEditProfile() },
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Edit, null, tint = if(ShynaDesign.colors.isDark) Color.White else Color.Black, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Edit, null, tint = Color.White, modifier = Modifier.size(16.dp))
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                Text(user?.name ?: "User", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
-                Text(user?.email ?: "", color = ShynaDesign.colors.TextSecondary, fontSize = 14.sp)
+                Text(user?.name ?: "User", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(user?.email ?: "", color = Color.White.copy(alpha = 0.8f), fontSize = 14.sp)
             }
         }
         
         Spacer(Modifier.height(16.dp))
-        ProfileItem("Profile", "Name, status, phone number", Icons.Outlined.Person) {
-            onEditProfile()
-        }
-        ProfileItem("Account", "Security, change number, delete account", Icons.Outlined.Key) {
-            showAccountSettings = true
-        }
-        ProfileItem("Privacy", "Block contacts, disappearing messages", Icons.Outlined.Lock) {
-            showPrivacySettings = true
-        }
-        ProfileItem("Chats", "Theme, wallpapers, chat history", Icons.Outlined.Chat) {
-            showChatSettings = true
-        }
-        ProfileItem("Starred Messages", "View all your starred messages", Icons.Outlined.Star) {
-            onOpenStarred()
-        }
-        ProfileItem("Storage and Data", "Network usage, auto-download", Icons.Outlined.Storage) {
-            showStorageSettings = true
-        }
-        ProfileItem("Network Usage", "Check data used by calls and media", Icons.Outlined.BarChart) {
-            showNetworkUsage = true
-        }
         
-        ProfileItem("Help", "Help center, contact us, privacy policy", Icons.Outlined.HelpOutline) {
-            showHelp = true
+        Surface(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = ShynaDesign.colors.SurfaceBg,
+            shadowElevation = 2.dp
+        ) {
+            Column(Modifier.padding(vertical = 8.dp)) {
+                ProfileItem("Profile", "Name, status, phone number", Icons.Outlined.Person) { onEditProfile() }
+                ProfileItem("Account", "Security, 2FA, delete account", Icons.Outlined.Key) { showAccountSettings = true }
+                ProfileItem("Privacy", "Block contacts, disappearing messages", Icons.Outlined.Lock) { showPrivacySettings = true }
+                ProfileItem("Chats", "Theme, wallpapers, chat history", Icons.Outlined.Chat) { showChatSettings = true }
+            }
         }
-        ProfileItem("Invite a friend", "Invite your friends to Shyna Calling", Icons.Outlined.GroupAdd) {
-            showInvite = true
+
+        Spacer(Modifier.height(16.dp))
+
+        Surface(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = ShynaDesign.colors.SurfaceBg,
+            shadowElevation = 2.dp
+        ) {
+            Column(Modifier.padding(vertical = 8.dp)) {
+                ProfileItem("Starred Messages", "View all your starred messages", Icons.Outlined.Star) { onOpenStarred() }
+                ProfileItem("Storage and Data", "Network usage, auto-download", Icons.Outlined.Storage) { showStorageSettings = true }
+                ProfileItem("Network Usage", "Check data used by calls and media", Icons.Outlined.BarChart) { onOpenNetworkUsage() }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Surface(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = ShynaDesign.colors.SurfaceBg,
+            shadowElevation = 2.dp
+        ) {
+            Column(Modifier.padding(vertical = 8.dp)) {
+                ProfileItem("Help", "Help center, contact us, privacy policy", Icons.Outlined.HelpOutline) { showHelp = true }
+                ProfileItem("Invite a friend", "Invite your friends to Shyna Calling", Icons.Outlined.GroupAdd) { showInvite = true }
+            }
         }
 
         Spacer(Modifier.height(24.dp))
-        TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Logout", color = Color.Red, fontWeight = FontWeight.Bold)
+        
+        TextButton(
+            onClick = onLogout, 
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+            colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
+        ) {
+            Icon(Icons.Default.Logout, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Logout", fontWeight = FontWeight.Bold)
         }
+        Spacer(Modifier.height(40.dp))
     }
 }
 
@@ -4814,11 +5032,18 @@ private fun UsageSection(title: String, subtitle: String, icon: ImageVector) {
 }
 
 @Composable
-private fun ProfileItem(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit) {
+private fun ProfileItem(title: String, subtitle: String, icon: ImageVector, color: Color = ShynaDesign.colors.TextPrimary, onClick: () -> Unit) {
     ListItem(
-        headlineContent = { Text(title, color = ShynaDesign.colors.TextPrimary) },
-        supportingContent = { Text(subtitle, color = ShynaDesign.colors.TextSecondary) },
-        leadingContent = { Icon(icon, null, tint = ShynaDesign.colors.TextSecondary) },
+        headlineContent = { Text(title, color = color, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+        supportingContent = { Text(subtitle, color = ShynaDesign.colors.TextSecondary, fontSize = 13.sp) },
+        leadingContent = { 
+            Surface(Modifier.size(40.dp), shape = CircleShape, color = ShynaDesign.colors.DividerColor) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(20.dp))
+                }
+            }
+        },
+        trailingContent = { Icon(Icons.AutoMirrored.Default.KeyboardArrowRight, null, tint = ShynaDesign.colors.DividerColor) },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable(onClick = onClick)
     )
@@ -5977,25 +6202,10 @@ private fun SignUpScreen(
                                     createProfile(result.user?.uid ?: "")
                                 }
                                 .addOnFailureListener { e ->
+                                    loading = false
                                     if (e is FirebaseAuthUserCollisionException) {
-                                        // Email exists. Check if Firestore profile exists.
-                                        auth.signInWithEmailAndPassword(trimmedEmail, password).addOnSuccessListener { signInResult ->
-                                            val uid = signInResult.user?.uid ?: ""
-                                            db.collection("users").document(uid).get().addOnSuccessListener { doc ->
-                                                if (doc.exists()) {
-                                                    loading = false
-                                                    Toast.makeText(mContext, "Account already exists. Please login.", Toast.LENGTH_LONG).show()
-                                                } else {
-                                                    // Recovering: Profile missing but Auth exists
-                                                    createProfile(uid)
-                                                }
-                                            }
-                                        }.addOnFailureListener {
-                                            loading = false
-                                            Toast.makeText(mContext, "Email already in use with a different password.", Toast.LENGTH_LONG).show()
-                                        }
+                                        Toast.makeText(mContext, "This email is already registered. You are not allowed to create a new profile with it. Please login or delete your old account first.", Toast.LENGTH_LONG).show()
                                     } else {
-                                        loading = false
                                         Log.e("ShynaAuth", "Auth failed", e)
                                         Toast.makeText(mContext, "Sign Up Failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
                                     }

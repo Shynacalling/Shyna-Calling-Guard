@@ -179,12 +179,21 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
     }
 
     fun updateLocation(location: Location) {
+        val oldLocation = currentLocation
         currentLocation = location
         accuracy = location.accuracy
         isLocating = false
         val latLng = LatLng(location.latitude, location.longitude)
         
-        if (cameraPositionState.position.target.latitude == 20.5937) {
+        // Initial zoom or if far from last or if accuracy improved significantly
+        val distance = oldLocation?.distanceTo(location) ?: 100f
+        val accuracyImproved = (oldLocation?.accuracy ?: 100f) - accuracy > 5f
+
+        if (cameraPositionState.position.target.latitude == 20.5937 || 
+            (accuracy < 25 && cameraPositionState.position.zoom < 15f) ||
+            (accuracy < 20 && distance > 10) ||
+            accuracyImproved) {
+            
             scope.launch {
                 cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(latLng, 17f))
             }
@@ -192,23 +201,34 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
         }
     }
 
-    fun requestFreshLocation() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            return
+    DisposableEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L)
+                .setMinUpdateIntervalMillis(500L)
+                .setDurationMillis(Long.MAX_VALUE)
+                .setMaxUpdateDelayMillis(2000L)
+                .setWaitForAccurateLocation(true)
+                .build()
+
+            val callback = object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    result.lastLocation?.let { updateLocation(it) }
+                }
+            }
+            fusedLocationClient.requestLocationUpdates(request, callback, context.mainLooper)
+            onDispose { fusedLocationClient.removeLocationUpdates(callback) }
+        } else {
+            permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
+            onDispose {}
         }
-        
+    }
+
+    fun requestFreshLocation() {
         isLocating = true
         scope.launch {
             try {
                 val loc = fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-                loc?.let { 
-                    updateLocation(it)
-                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(it.latitude, it.longitude), 18f))
-                } ?: run {
-                    val last = fusedLocationClient.lastLocation.await()
-                    last?.let { updateLocation(it) }
-                }
+                loc?.let { updateLocation(it) }
             } catch (e: Exception) {
                 Log.e(TAG, "Location request failed", e)
                 isLocating = false

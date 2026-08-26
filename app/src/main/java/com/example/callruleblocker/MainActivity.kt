@@ -45,6 +45,7 @@ import com.example.callruleblocker.call.MainCallType
 import com.example.callruleblocker.call.GlobalCallState
 import com.example.callruleblocker.data.DiscoveryWorker
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import androidx.work.*
 
 class MainActivity : FragmentActivity() {
@@ -74,6 +75,8 @@ class MainActivity : FragmentActivity() {
                 val repository = remember { RuleRepository(context) }
                 val rules by repository.observeAll().collectAsState(initial = emptyList())
                 
+                val processedCallIds = remember { mutableStateSetOf<String>() }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -288,16 +291,30 @@ class MainActivity : FragmentActivity() {
                                 val activeSession = CallStateController.activeSession.value
                                 val currentState = CallStateController.globalState.value
                                 
-                                // FORENSIC LOG
-                                Log.d("ShynaCall", "FIRESTORE_INCOMING_CALL: id=${call.id} status=${call.status} current_active_id=${activeSession?.callId} current_state=$currentState")
+                                // IDEMPOTENT LAUNCH LOGIC:
+                                val isSameCall = activeSession?.callId == call.id
+                                
+                                if (isSameCall && currentState != GlobalCallState.IDLE) {
+                                    Log.d("ShynaCall", "Firestore: Call ${call.id} already handling ($currentState). Skipping launch.")
+                                    return@listenForIncomingCalls
+                                }
 
-                                if (currentState != GlobalCallState.IDLE && currentState != GlobalCallState.ENDED && activeSession?.callId != call.id) {
-                                    Log.d("ShynaCall", "User Truly Busy: Auto-rejecting new incoming call ${call.id}")
+                                val isTrulyBusy = currentState != GlobalCallState.IDLE && currentState != GlobalCallState.ENDED && !isSameCall
+
+                                if (isTrulyBusy) {
+                                    Log.d("ShynaCall", "User Truly Busy: Auto-rejecting new incoming call ${call.id} (Current: ${activeSession?.callId} State: $currentState)")
                                     com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(call.id, com.example.callruleblocker.call.AppCallStatus.REJECTED, "user_busy_firestore")
-                                } else if (activeSession?.callId == call.id && currentState != GlobalCallState.IDLE) {
-                                    Log.d("ShynaCall", "Ignoring Firestore update for current active call ${call.id}")
                                 } else {
-                                    Log.d("ShynaCall", "STARTING_APP_CALL_ACTIVITY_FROM_FIRESTORE id=${call.id}")
+                                    // Prevent rapid re-launch loops for the SAME call
+                                    if (processedCallIds.contains(call.id)) return@listenForIncomingCalls
+                                    
+                                    processedCallIds.add(call.id)
+                                    scope.launch {
+                                        delay(15000) // Increase window to 15s
+                                        processedCallIds.remove(call.id)
+                                    }
+
+                                    Log.d("ShynaCall", "LAUNCHING_CALL_ACTIVITY: id=${call.id} isSameCall=$isSameCall")
                                     val intent = Intent(this@MainActivity, AppCallActivity::class.java).apply {
                                         putExtra("callId", call.id)
                                         putExtra("isIncoming", true)

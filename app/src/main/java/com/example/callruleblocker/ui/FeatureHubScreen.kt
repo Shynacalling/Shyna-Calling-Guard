@@ -344,6 +344,8 @@ private fun AdvancedFeatureRow(
 private fun advancedSections(): List<AdvancedSection> = listOf(
     AdvancedSection("calls", "Call Management", "screening, rules and dual-SIM", Icons.Outlined.Call, listOf(
         f("ai_spam", "AI spam detection", "Local risk flags with caller-ID provider support", Icons.Outlined.Security, true, options = listOf("Warn only", "Auto block high risk", "Community report")),
+        f("fast_blocking", "Fast call blocking", "Instant microsecond-level pre-ring rejection", Icons.Outlined.FlashOn, true),
+        f("no_ring_cut", "No call ring cut auto", "Ensure zero ring by auto-terminating known spam", Icons.Outlined.DoNotDisturbOn, true),
         f("risk_score", "Unknown number risk score", "Shows low, medium or high risk before answering", Icons.Outlined.GppMaybe, true),
         f("geo_block", "Country / state wise blocking", "Create geographic and prefix-based blocking rules", Icons.Outlined.Public, true, route = FeatureRoute.RULES, options = listOf("International", "State prefixes", "Except contacts")),
         f("time_block", "Time based blocking", "Office hours, night mode and custom schedules", Icons.Outlined.Schedule, true, route = FeatureRoute.RULES, options = listOf("Office hours", "Night mode", "Weekend")),

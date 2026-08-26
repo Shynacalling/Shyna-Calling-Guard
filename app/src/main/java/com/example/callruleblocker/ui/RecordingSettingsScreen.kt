@@ -61,6 +61,7 @@ fun RecordingSettingsScreen(
 ) {
     val context = LocalContext.current
     val appearance = LocalAppearance.current
+    var refresh by remember { mutableIntStateOf(0) }
     var buttonSoundEnabled by remember { mutableStateOf(UiFeedback.isSoundEnabled(context)) }
     val prefs = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     val recordPrefs = remember { context.getSharedPreferences(RECORD_PREFS, Context.MODE_PRIVATE) }
@@ -85,6 +86,7 @@ fun RecordingSettingsScreen(
         if (granted) {
             recordPrefs.edit().putString("recording_mode", "AUTO").apply()
             recordingMode = "AUTO"
+            refresh++
         } else {
             android.widget.Toast.makeText(context, "Recording requires microphone permission", android.widget.Toast.LENGTH_LONG).show()
         }
@@ -101,11 +103,39 @@ fun RecordingSettingsScreen(
                 .apply()
             backgroundMode = "CUSTOM"
             backgroundDialog = false
+            refresh++
         }
     }
 
-    fun bool(key: String, default: Boolean = false) = prefs.getBoolean(key, default)
-    fun setBool(key: String, value: Boolean) = prefs.edit().putBoolean(key, value).apply()
+    val videoBackgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            prefs.edit()
+                .putString("call_background_video_uri", uri.toString())
+                .apply()
+            refresh++
+            android.widget.Toast.makeText(context, "Video background updated", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun bool(key: String, default: Boolean = false): Boolean {
+        refresh
+        return prefs.getBoolean(key, default)
+    }
+    fun setBool(key: String, value: Boolean) {
+        prefs.edit().putBoolean(key, value).apply()
+        refresh++
+    }
+    fun recordBool(key: String, default: Boolean = false): Boolean {
+        refresh
+        return recordPrefs.getBoolean(key, default)
+    }
+    fun setRecordBool(key: String, value: Boolean) {
+        recordPrefs.edit().putBoolean(key, value).apply()
+        refresh++
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -213,15 +243,15 @@ fun RecordingSettingsScreen(
                             icon = Icons.Outlined.VolumeUp,
                             title = "Speaker-assisted recording",
                             subtitle = "Auto-toggle speakerphone for clearer capture",
-                            checked = recordPrefs.getBoolean("speaker_assisted", false)
-                        ) { recordPrefs.edit().putBoolean("speaker_assisted", it).apply() }
+                            checked = recordBool("speaker_assisted", false)
+                        ) { setRecordBool("speaker_assisted", it) }
                         DividerInset()
                         ToggleSettingsRow(
                             icon = Icons.Outlined.Security,
                             title = "Professional recording bypass",
                             subtitle = "Saves file even if system blocks audio signal",
-                            checked = recordPrefs.getBoolean("professional_bypass", false)
-                        ) { recordPrefs.edit().putBoolean("professional_bypass", it).apply() }
+                            checked = recordBool("professional_bypass", false)
+                        ) { setRecordBool("professional_bypass", it) }
                         DividerInset()
                         ToggleSettingsRow(
                             icon = Icons.Outlined.Subtitles,
@@ -342,8 +372,8 @@ fun RecordingSettingsScreen(
                             icon = Icons.Outlined.AutoDelete,
                             title = "Auto-delete recordings",
                             subtitle = "Automatically remove recordings older than 30 days",
-                            checked = prefs.getBoolean("auto_delete_recordings", true)
-                        ) { prefs.edit().putBoolean("auto_delete_recordings", it).apply() }
+                            checked = bool("auto_delete_recordings", true)
+                        ) { setBool("auto_delete_recordings", it) }
                         DividerInset()
                         SettingsRow(Icons.Outlined.SystemUpdate, "Upgred available", "Current version: 4.14.6") {
                             showUpdateDialog = true
@@ -425,6 +455,7 @@ fun RecordingSettingsScreen(
                 } else {
                     recordPrefs.edit().putString("recording_mode", value).apply()
                     recordingMode = value
+                    refresh++
                 }
                 recordingModeDialog = false
             }
@@ -439,6 +470,7 @@ fun RecordingSettingsScreen(
             onSave = { values ->
                 recordPrefs.edit().putStringSet("excluded_numbers", values).apply()
                 exclusionsDialog = false
+                refresh++
             }
         )
     }
@@ -467,6 +499,7 @@ fun RecordingSettingsScreen(
                 recordPrefs.edit().putString("recording_scope", value).apply()
                 recordingScope = value
                 recordingScopeDialog = false
+                refresh++
             }
         )
     }
@@ -479,6 +512,7 @@ fun RecordingSettingsScreen(
             onSave = { values ->
                 recordPrefs.edit().putStringSet("selected_record_numbers", values).apply()
                 selectedRecordingDialog = false
+                refresh++
             },
             title = "Record only these numbers",
             description = "Use this list with Selected numbers only automatic recording."
@@ -501,21 +535,24 @@ fun RecordingSettingsScreen(
     if (backgroundDialog) {
         ChoiceDialog(
             title = "Call background",
-            options = CALL_BACKGROUND_OPTIONS + listOf("Custom image", "Reset custom image"),
+            options = CALL_BACKGROUND_OPTIONS + listOf("Custom image", "Video background", "Reset custom image"),
             selected = backgroundSummary(backgroundMode),
             onDismiss = { backgroundDialog = false },
             onSelect = { label ->
                 when (label) {
                     "Custom image" -> customBackgroundPicker.launch(arrayOf("image/*"))
+                    "Video background" -> videoBackgroundPicker.launch(arrayOf("video/*"))
                     "Reset custom image" -> {
-                        prefs.edit().remove("call_background_uri").putString("call_background", "AURORA").apply()
+                        prefs.edit().remove("call_background_uri").remove("call_background_video_uri").putString("call_background", "AURORA").apply()
                         backgroundMode = "AURORA"
                         backgroundDialog = false
+                        refresh++
                     }
                     else -> {
                         backgroundMode = backgroundCodeForLabel(label)
                         prefs.edit().putString("call_background", backgroundMode).apply()
                         backgroundDialog = false
+                        refresh++
                     }
                 }
             }

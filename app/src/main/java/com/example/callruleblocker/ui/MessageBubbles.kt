@@ -321,7 +321,7 @@ fun ContactMessageBubble(m: UniversalMessage) {
 }
 
 @Composable
-fun PollMessageBubble(m: UniversalMessage, userId: String, onVote: (Int) -> Unit) {
+fun PollMessageBubble(m: UniversalMessage, userId: String, isSelectionMode: Boolean = false, onVote: (Int) -> Unit) {
     Column(
         modifier = Modifier
             .width(280.dp)
@@ -364,7 +364,7 @@ fun PollMessageBubble(m: UniversalMessage, userId: String, onVote: (Int) -> Unit
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = canInteract) { onVote(index) }
+                    .clickable(enabled = canInteract && !isSelectionMode) { onVote(index) }
                     .padding(vertical = 6.dp)
                     .graphicsLayer { alpha = if (!canInteract && !hasVoted) 0.6f else 1.0f }
             ) {
@@ -387,7 +387,7 @@ fun PollMessageBubble(m: UniversalMessage, userId: String, onVote: (Int) -> Unit
 }
 
 @Composable
-fun EventMessageBubble(m: UniversalMessage, userId: String, onRSVP: () -> Unit) {
+fun EventMessageBubble(m: UniversalMessage, userId: String, isSelectionMode: Boolean = false, onRSVP: () -> Unit) {
     val goingCount = m.eventRSVPs["going"]?.size ?: 0
     val maybeCount = m.eventRSVPs["maybe"]?.size ?: 0
     val currentUserStatus = when {
@@ -422,7 +422,7 @@ fun EventMessageBubble(m: UniversalMessage, userId: String, onRSVP: () -> Unit) 
             .width(260.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFFFFF8E1))
-            .clickable(enabled = canInteract) { onRSVP() }
+            .clickable(enabled = canInteract && !isSelectionMode) { onRSVP() }
             .padding(12.dp)
             .graphicsLayer { alpha = if (!canInteract) 0.8f else 1.0f }
     ) {
@@ -462,7 +462,7 @@ fun EventMessageBubble(m: UniversalMessage, userId: String, onRSVP: () -> Unit) 
 }
 
 @Composable
-fun CallMessageBubble(m: UniversalMessage, onCallAgain: () -> Unit) {
+fun CallMessageBubble(m: UniversalMessage, isSelectionMode: Boolean = false, onCallAgain: () -> Unit) {
     val isVideo = m.callType == "VIDEO"
     val status = m.callStatus ?: "ENDED"
     
@@ -487,7 +487,7 @@ fun CallMessageBubble(m: UniversalMessage, onCallAgain: () -> Unit) {
         modifier = Modifier
             .width(220.dp)
             .clip(RoundedCornerShape(12.dp))
-            .clickable { onCallAgain() },
+            .clickable(enabled = !isSelectionMode) { onCallAgain() },
         color = ShynaDesign.colors.SurfaceBg,
         border = BorderStroke(1.dp, ShynaDesign.colors.DividerColor)
     ) {

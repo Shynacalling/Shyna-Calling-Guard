@@ -405,6 +405,9 @@ private fun AdvancedCallScreen(
     val showName = settings.getBoolean("caller_name", true)
     val showNumber = settings.getBoolean("caller_number", true)
     val showSim = settings.getBoolean("caller_sim", true)
+    val advancedPrefs = remember { context.getSharedPreferences("advanced_feature_control_v5", Context.MODE_PRIVATE) }
+    val videoCallerIdEnabled = advancedPrefs.getBoolean("feature_video_full", true)
+    
     val backgroundMode = settings.getString("call_background", "AURORA") ?: "AURORA"
     val customBackgroundUri = settings.getString("call_background_uri", null)
     var customBackgroundBytes by remember(customBackgroundUri) { mutableStateOf<ByteArray?>(null) }
@@ -590,7 +593,26 @@ private fun AdvancedCallScreen(
     }
 
     Box(Modifier.fillMaxSize().background(callBackground(backgroundMode))) {
-        if (customBackgroundBytes != null) {
+        if (videoCallerIdEnabled && isRinging) {
+            val videoUri = settings.getString("call_background_video_uri", null)
+            if (!videoUri.isNullOrBlank()) {
+                AndroidView(
+                    factory = { ctx ->
+                        android.widget.VideoView(ctx).apply {
+                            setVideoURI(Uri.parse(videoUri))
+                            setOnPreparedListener { mp ->
+                                mp.isLooping = true
+                                start()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.2f)))
+            }
+        }
+        
+        if (customBackgroundBytes != null && (!videoCallerIdEnabled || !isRinging)) {
             val bitmap = remember(customBackgroundBytes) {
                 customBackgroundBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
             }
