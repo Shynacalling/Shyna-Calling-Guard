@@ -40,6 +40,7 @@ class CallActionReceiver : BroadcastReceiver() {
 
             "com.example.callruleblocker.action.ACCEPT_APP_CALL" -> {
                 val callId = intent.getStringExtra("callId") ?: return
+                android.util.Log.d("ShynaCall", "ACCEPT_RECEIVER_STARTED id=$callId")
                 val startIntent = Intent(context, AppCallActivity::class.java).apply {
                     putExtra("callId", callId)
                     putExtra("isIncoming", true)
@@ -53,20 +54,28 @@ class CallActionReceiver : BroadcastReceiver() {
 
             "com.example.callruleblocker.action.DECLINE_APP_CALL" -> {
                 val callId = intent.getStringExtra("callId") ?: return
-                // Fetch call info to save to history before updating status
+                android.util.Log.d("ShynaCall", "CALL_DECLINED_VIA_RECEIVER id=$callId")
+                
+                // 1. Update signaling first (Most critical)
+                com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(callId, com.example.callruleblocker.call.AppCallStatus.REJECTED, "user_decline_receiver")
+                
+                // 2. Fetch call info to save to history (Async background)
                 val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 db.collection("app_calls").document(callId).get().addOnSuccessListener { snapshot ->
                     val call = snapshot.toObject(com.example.callruleblocker.call.AppCall::class.java)
                     if (call != null) {
-                        val updatedCall = call.copy(status = com.example.callruleblocker.call.AppCallStatus.REJECTED)
                         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
                         if (currentUid != null) {
+                            val updatedCall = call.copy(status = com.example.callruleblocker.call.AppCallStatus.REJECTED)
                             com.example.callruleblocker.call.CallSignalingManager.saveCallHistory(updatedCall, currentUid)
                             com.example.callruleblocker.call.CallSignalingManager.saveCallMessageToChat(updatedCall)
                         }
                     }
-                    com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(callId, com.example.callruleblocker.call.AppCallStatus.REJECTED)
+                }.addOnFailureListener { e ->
+                    android.util.Log.e("ShynaCall", "HISTORY_SAVE_FAILED_ON_DECLINE", e)
                 }
+                
+                // 3. Cleanup notification
                 val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
                 nm.cancel(callId.hashCode())
             }

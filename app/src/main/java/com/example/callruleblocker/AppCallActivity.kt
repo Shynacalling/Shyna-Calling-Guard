@@ -64,27 +64,77 @@ import kotlinx.coroutines.launch
 import kotlin.time.Duration.Companion.milliseconds
 
 class AppCallActivity : ComponentActivity() {
+    private var currentCallId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d("ShynaCall", "APP_CALL_ACTIVITY_ON_CREATE")
         
-        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setupScreenBehavior()
 
         val callId = intent.getStringExtra("callId") ?: return finish()
         val isIncoming = intent.getBooleanExtra("isIncoming", false)
         val autoAccept = intent.getBooleanExtra("autoAccept", false)
+        
+        autoAcceptState.value = autoAccept
+        Log.d("ShynaCall", "APP_CALL_ACTIVITY_CALL_ID=$callId isIncoming=$isIncoming")
 
         setContent {
             ShynaTheme(mode = ThemeMode.DARK) {
-                AppCallScreen(callId, isIncoming, autoAccept, onExit = { finish() })
+                AppCallScreen(callId, isIncoming, autoAcceptState, onExit = { finish() })
             }
+        }
+    }
+
+    private var autoAcceptState = mutableStateOf(false)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val callId = intent.getStringExtra("callId")
+        val isIncoming = intent.getBooleanExtra("isIncoming", false)
+        val autoAccept = intent.getBooleanExtra("autoAccept", false)
+        Log.d("ShynaCall", "APP_CALL_ACTIVITY_ON_NEW_INTENT callId=$callId autoAccept=$autoAccept")
+        
+        if (callId != null) {
+            if (callId != currentCallId) {
+                currentCallId = callId
+                autoAcceptState.value = autoAccept
+                setContent {
+                    ShynaTheme(mode = ThemeMode.DARK) {
+                        AppCallScreen(callId, isIncoming, autoAcceptState, onExit = { finish() })
+                    }
+                }
+            } else {
+                autoAcceptState.value = autoAccept
+                Log.d("ShynaCall", "Same call autoAccept update set to ${autoAcceptState.value}")
+            }
+        }
+    }
+
+    private fun setupScreenBehavior() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            keyguardManager.requestDismissKeyguard(this, null)
         }
     }
 }
 
 @Composable
-fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onExit: () -> Unit) {
+fun AppCallScreen(callId: String, isIncoming: Boolean, autoAcceptState: State<Boolean>, onExit: () -> Unit) {
+    val autoAccept by autoAcceptState
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var call by remember { mutableStateOf<AppCall?>(null) }
@@ -115,16 +165,20 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
         var ringtone: Ringtone? = null
         if (isIncoming && call?.status == AppCallStatus.RINGING) {
             try {
+                Log.d("ShynaCall", "RINGTONE_START_ATTEMPT")
                 val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 ringtone = RingtoneManager.getRingtone(context, ringtoneUri)
                 ringtone?.play()
-                Log.d("ShynaCall", "Incoming ringtone started")
+                Log.d("ShynaCall", "RINGTONE_STARTED")
             } catch (e: Exception) {
                 Log.e("ShynaCall", "Ringtone Error: ${e.message}")
             }
         }
         onDispose {
-            ringtone?.stop()
+            if (ringtone?.isPlaying == true) {
+                ringtone.stop()
+                Log.d("ShynaCall", "RINGTONE_STOPPED")
+            }
         }
     }
 
@@ -210,34 +264,13 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[Manifest.permission.RECORD_AUDIO] != true) {
-            Toast.makeText(context, "Microphone access is required", Toast.LENGTH_LONG).show()
-            onExit()
-        }
-    }
+    var isJoining by remember { mutableStateOf(false) }
+    
+    // Mutual references for lambdas
+    var joinCallLambda by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var routeAudioLambda by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
 
-    val screenShareLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == android.app.Activity.RESULT_OK) {
-            val data = result.data ?: return@rememberLauncherForActivityResult
-            scope.launch {
-                try {
-                    // For LiveKit Android SDK 2.x
-                    room?.localParticipant?.setScreenShareEnabled(true, io.livekit.android.room.track.screencapture.ScreenCaptureParams(mediaProjectionPermissionResultData = data))
-                    isScreenSharing = true
-                    Log.d("ShynaCall", "[SHARE] Screen Sharing Started")
-                } catch (e: Exception) {
-                    Log.e("ShynaCall", "[SHARE] Failed to start", e)
-                }
-            }
-        }
-    }
-
-    val routeAudio = { speaker: Boolean ->
+    val routeAudio: (Boolean) -> Unit = { speaker ->
         Log.d("ShynaCall", "[AUDIO] Routing Request: speaker=$speaker")
         try {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -261,7 +294,6 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                 audioManager.isSpeakerphoneOn = speaker
             }
             
-            // Request Audio Focus
             val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 audioManager.requestAudioFocus(
                     android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -278,19 +310,32 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
             }
             Log.d("ShynaCall", "[AUDIO] Focus result=$focusResult")
             
-            // Ensure Volume is UP
             val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
             if (currentVol == 0) {
                 audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) / 2, 0)
                 Log.d("ShynaCall", "[AUDIO] Volume was 0, boosted to 50%")
             }
-            
         } catch (e: Exception) {
             Log.e("ShynaCall", "[AUDIO] Route Error: ${e.message}")
         }
     }
 
-    var isJoining by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] == true
+        val camNeeded = call?.type == AppCallType.VIDEO
+        val camGranted = if (camNeeded) permissions[Manifest.permission.CAMERA] == true else true
+        
+        if (micGranted && camGranted) {
+            Log.d("ShynaCall", "Permissions granted via launcher, retrying joinCall")
+            joinCallLambda?.invoke()
+        } else {
+            Log.e("ShynaCall", "Permissions denied: Mic=$micGranted, Cam=$camGranted")
+            Toast.makeText(context, "Required permissions denied", Toast.LENGTH_LONG).show()
+            onExit()
+        }
+    }
 
     val joinCall: () -> Unit = {
         if (!isJoining && room == null) {
@@ -310,22 +355,23 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                     try {
                         val currentUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
                         if (currentUid == null || call == null) {
-                            Log.e("ShynaCall", "Join Failed: UID or Call is null")
+                            Log.e("ShynaCall", "CALL_CONNECTION_FAILED reason=null_user_or_call")
                             onExit()
                             return@launch
                         }
                         
+                        Log.d("ShynaCall", "JOIN_FLOW_STARTED ROOM_ID=${call!!.roomName}")
                         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
                         val r = callManager.joinRoom(call!!.roomName, currentUid)
                         room = r
-                        Log.d("ShynaCall", "[CALL] Room Connected: ${call!!.roomName}")
+                        Log.d("ShynaCall", "ROOM_CONNECT_SUCCESS id=${call!!.roomName}")
                         
                         routeAudio(isSpeakerOn)
                         
                         scope.launch { 
                             delay(800) // Stability delay
                             r.localParticipant.setMicrophoneEnabled(true)
-                            Log.d("ShynaCall", "[AUDIO] Local Mic Enabled")
+                            Log.d("ShynaCall", "AUDIO_TRACK_PUBLISHED")
                         }
                         
                         if (call?.type == AppCallType.VIDEO) {
@@ -336,54 +382,33 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                         
                         localVideoTrack = r.localParticipant.videoTrackPublications.firstOrNull()?.second as? VideoTrack
                         r.remoteParticipants.values.forEach { p ->
-                            p.videoTrackPublications.firstOrNull()?.second?.let { remoteVideoTrack = it as? VideoTrack }
+                            p.videoTrackPublications.firstOrNull()?.second?.let { 
+                                remoteVideoTrack = it as? VideoTrack 
+                                Log.d("ShynaCall", "REMOTE_TRACK_RECEIVED")
+                            }
                         }
                         
                         CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ACTIVE, callId)
                         CallSignalingManager.updateCallStatus(callId, AppCallStatus.CONNECTED)
+                        Log.d("ShynaCall", "CALL_CONNECTED")
 
                         r.events.collect { event ->
                             connectionState = r.state
-                            Log.d("ShynaCall", "[EVENT] $event. Current Room State: ${r.state}")
+                            Log.d("ShynaCall", "[EVENT] $event. CONNECTION_STATE=${r.state}")
                             
                             when (event) {
-                                is RoomEvent.Reconnecting -> Log.d("ShynaCall", "[CALL] Reconnecting...")
-                                is RoomEvent.Reconnected -> Log.d("ShynaCall", "[CALL] Reconnected")
                                 is RoomEvent.TrackSubscribed -> {
                                     if (event.track is VideoTrack) {
                                         remoteVideoTrack = event.track as VideoTrack
-                                        Log.d("ShynaCall", "[VIDEO] Remote Track Subscribed: ${event.track.sid}")
+                                        Log.d("ShynaCall", "REMOTE_TRACK_RECEIVED type=VIDEO")
                                     } else {
-                                        Log.d("ShynaCall", "[AUDIO] Remote Audio Subscribed: ${event.track.sid}")
-                                        routeAudio(isSpeakerOn)
+                                        Log.d("ShynaCall", "REMOTE_TRACK_RECEIVED type=AUDIO")
+                                        routeAudioLambda?.invoke(isSpeakerOn)
                                     }
                                 }
-                                is RoomEvent.TrackUnsubscribed -> {
-                                    if (event.track == remoteVideoTrack) {
-                                        remoteVideoTrack = null
-                                        Log.d("ShynaCall", "[VIDEO] Remote Track Unsubscribed")
-                                    }
-                                }
-                                is RoomEvent.TrackPublished -> {
-                                    Log.d("ShynaCall", "[CALL] Track Published by ${event.participant.identity}: ${event.publication.sid}")
-                                    if (event.participant == r.localParticipant && event.publication.track is VideoTrack) {
-                                        localVideoTrack = event.publication.track as VideoTrack
-                                        Log.d("ShynaCall", "[VIDEO] Local Track Synced")
-                                    }
-                                }
-                                is RoomEvent.ParticipantConnected -> {
-                                    Log.d("ShynaCall", "[CALL] Participant Joined: ${event.participant.identity}")
-                                }
-                                is RoomEvent.ParticipantDisconnected -> {
-                                    Log.d("ShynaCall", "[CALL] Participant Left: ${event.participant.identity}")
-                                    // No auto-cut here. 
-                                }
-                                is RoomEvent.Connected -> Log.d("ShynaCall", "[CALL] Room Connection Established: ${r.name}")
                                 is RoomEvent.Disconnected -> {
-                                    Log.e("ShynaCall", "[CALL] LiveKit FATAL Disconnect: ${event.reason}. Room state: ${r.state}")
-                                    // Only end if fatal and NOT in middle of state change
+                                    Log.e("ShynaCall", "CALL_CONNECTION_FAILED reason=livekit_disconnect_${event.reason}")
                                     if (r.state == Room.State.DISCONNECTED && call?.status == AppCallStatus.CONNECTED) {
-                                        Log.d("ShynaCall", "[CALL] Terminating session due to LiveKit Disconnect")
                                         CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED, "livekit_disconnected")
                                     }
                                 }
@@ -396,21 +421,44 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
                             return@launch
                         }
 
-                        Log.e("ShynaCall", "[FATAL] Join Room Failed: ${e.message}", e)
+                        Log.e("ShynaCall", "CALL_CONNECTION_FAILED reason=exception error=${e.message}", e)
                         Toast.makeText(
                             context,
-                            "Call connection failed",
-                            Toast.LENGTH_SHORT
+                            "Connection Failed: ${e.localizedMessage ?: "Unknown error"}",
+                            Toast.LENGTH_LONG
                         ).show()
                         onExit()
                     } finally {
                         isJoining = false
-                        Log.d("ShynaCall", "[DEBUG] Join Process Finished. isJoining=false")
                     }
                 }
             } else {
+                Log.d("ShynaCall", "Requesting missing permissions for call")
                 permissionLauncher.launch(permissions.toTypedArray())
                 isJoining = false
+            }
+        }
+    }
+    
+    SideEffect {
+        joinCallLambda = joinCall
+        routeAudioLambda = routeAudio
+    }
+
+    val screenShareLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val data = result.data ?: return@rememberLauncherForActivityResult
+            scope.launch {
+                try {
+                    // For LiveKit Android SDK 2.x
+                    room?.localParticipant?.setScreenShareEnabled(true, io.livekit.android.room.track.screencapture.ScreenCaptureParams(mediaProjectionPermissionResultData = data))
+                    isScreenSharing = true
+                    Log.d("ShynaCall", "[SHARE] Screen Sharing Started")
+                } catch (e: Exception) {
+                    Log.e("ShynaCall", "[SHARE] Failed to start", e)
+                }
             }
         }
     }
@@ -484,18 +532,23 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
             when (call!!.status) {
                 AppCallStatus.RINGING -> {
                     if (isIncoming) {
+                        Log.d("ShynaCall", "INCOMING_UI_VISIBLE id=$callId")
                         IncomingCallUI(call!!, 
                             onAccept = { 
+                                Log.d("ShynaCall", "ACCEPT_CLICKED id=$callId")
+                                Log.d("ShynaCall", "CALL_STATUS_ACCEPTED id=$callId")
                                 CallSignalingManager.updateCallStatus(callId, AppCallStatus.ACCEPTED, "user_accept")
                                 joinCall()
                             }, 
                             onReject = { 
+                                Log.d("ShynaCall", "CALL_DECLINED id=$callId")
                                 CallSignalingManager.updateCallStatus(callId, AppCallStatus.REJECTED, "user_reject")
                                 onExit()
                             }
                         )
                     } else {
                         OutgoingCallUI(call!!, onCancel = {
+                            Log.d("ShynaCall", "CALL_CANCELLED id=$callId")
                             CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED, "caller_cancel")
                             onExit()
                         })
@@ -588,8 +641,14 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
 
     DisposableEffect(Unit) {
         onDispose {
+            Log.d("ShynaCall", "APP_CALL_SCREEN_DISPOSED id=$callId")
             AppCallService.stop(context)
             callManager.leaveRoom()
+            
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            nm.cancel(callId.hashCode())
+            Log.d("ShynaCall", "NOTIFICATION_CLEANUP hash=${callId.hashCode()}")
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 audioManager.clearCommunicationDevice()
             }
@@ -615,7 +674,7 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAccept: Boolean, onEx
 
                     // CRITICAL: Ensure document status is ENDED if activity is closed while call is active
                     if (c.status == AppCallStatus.CONNECTED || c.status == AppCallStatus.ACCEPTED) {
-                        Log.d("ShynaCall", "[DEBUG] Activity Disposed while Active. Ending signaling.")
+                        Log.d("ShynaCall", "CALL_ENDED_ON_DISPOSE id=$callId")
                         CallSignalingManager.updateCallStatus(callId, AppCallStatus.ENDED, "activity_disposed")
                     }
                 }

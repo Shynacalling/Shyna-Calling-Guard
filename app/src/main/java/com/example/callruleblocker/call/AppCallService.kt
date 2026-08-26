@@ -37,13 +37,15 @@ class AppCallService : Service() {
         val peerName = intent?.getStringExtra("peerName") ?: "Active Call"
         val isVideo = intent?.getBooleanExtra("isVideo", false) ?: false
 
+        android.util.Log.d("ShynaCall", "APP_CALL_SERVICE_STARTING id=$callId")
         createNotificationChannel()
 
         val fullScreenIntent = Intent(this, AppCallActivity::class.java).apply {
             putExtra("callId", callId)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        val pendingIntent = PendingIntent.getActivity(this, 0, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val requestCode = callId.hashCode() + 10 // Offset to avoid clash with ringing notification
+        val pendingIntent = PendingIntent.getActivity(this, requestCode, fullScreenIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)

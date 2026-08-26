@@ -37,7 +37,9 @@ fun PermissionGateScreen(onPermissionsGranted: () -> Unit) {
             Manifest.permission.CALL_PHONE,
             Manifest.permission.READ_PHONE_NUMBERS,
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA
         ).apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 add(Manifest.permission.ANSWER_PHONE_CALLS)

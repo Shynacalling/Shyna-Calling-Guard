@@ -80,7 +80,7 @@ object CallSignalingManager {
 
     fun listenForIncomingCalls(userUid: String, onIncomingCall: (AppCall) -> Unit) {
         callListener?.remove()
-        Log.d(TAG, "LISTENING_FOR_CALLS: uid=$userUid")
+        Log.d(TAG, "LISTENING_FOR_CALLS_START: uid=$userUid")
         callListener = db.collection("app_calls")
             .whereEqualTo("receiverUid", userUid)
             .whereEqualTo("status", AppCallStatus.RINGING.name)
@@ -94,13 +94,19 @@ object CallSignalingManager {
                     if (dc.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                         val call = dc.document.toObject(AppCall::class.java)
                         // Verify it's a recent call (within 1 minute) and still ringing
-                        if (call.status == AppCallStatus.RINGING && System.currentTimeMillis() - call.timestamp < 60000) {
-                            Log.d(TAG, "INCOMING_CALL: id=${call.id} caller=${call.callerName}")
+                        val now = System.currentTimeMillis()
+                        val diff = now - call.timestamp
+                        Log.d(TAG, "FIRESTORE_SIGNAL_RECEIVED: id=${call.id} status=${call.status} diff=${diff}ms")
+                        
+                        if (call.status == AppCallStatus.RINGING && diff < 60000) {
+                            Log.d(TAG, "INCOMING_CALL_VALIDATED: id=${call.id} caller=${call.callerName}")
                             
                             // Report to Central Controller
                             CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.INCOMING, call.id)
                             
                             onIncomingCall(call)
+                        } else {
+                            Log.d(TAG, "INCOMING_CALL_IGNORED: id=${call.id} status=${call.status} diff=${diff}ms")
                         }
                     }
                 }
@@ -108,13 +114,14 @@ object CallSignalingManager {
     }
 
     fun updateCallStatus(callId: String, status: AppCallStatus, reason: String? = null) {
+        Log.d(TAG, "UPDATING_CALL_STATUS: id=$callId target=$status reason=$reason")
         val updates = mutableMapOf<String, Any>("status" to status.name)
         reason?.let { updates["endReason"] = it }
         
         db.collection("app_calls").document(callId)
             .update(updates)
             .addOnSuccessListener {
-                Log.d(TAG, "STATUS_UPDATED: $callId -> $status (Reason: $reason)")
+                Log.d(TAG, "STATUS_UPDATED_SUCCESS: $callId -> $status")
             }
             .addOnFailureListener { e ->
                 Log.e(TAG, "STATUS_UPDATE_FAILED: id=$callId target=$status error=${e.message}")

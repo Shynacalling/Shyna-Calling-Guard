@@ -289,17 +289,15 @@ class MainActivity : FragmentActivity() {
                                 val currentState = CallStateController.globalState.value
                                 
                                 // FORENSIC LOG
-                                Log.d("ShynaCall", "Incoming Call Event: id=${call.id} status=${call.status} current_active_id=${activeSession?.callId} current_state=$currentState")
+                                Log.d("ShynaCall", "FIRESTORE_INCOMING_CALL: id=${call.id} status=${call.status} current_active_id=${activeSession?.callId} current_state=$currentState")
 
                                 if (currentState != GlobalCallState.IDLE && currentState != GlobalCallState.ENDED && activeSession?.callId != call.id) {
-                                    // REAL BUSY LOGIC: Only reject if it's a DIFFERENT call than the one we are already in.
                                     Log.d("ShynaCall", "User Truly Busy: Auto-rejecting new incoming call ${call.id}")
-                                    com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(call.id, com.example.callruleblocker.call.AppCallStatus.REJECTED)
-                                } else if (activeSession?.callId == call.id) {
-                                    // IGNORE: Document update for the current active call.
-                                    Log.d("ShynaCall", "Ignoring update for current active call ${call.id}")
+                                    com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(call.id, com.example.callruleblocker.call.AppCallStatus.REJECTED, "user_busy_firestore")
+                                } else if (activeSession?.callId == call.id && currentState != GlobalCallState.IDLE) {
+                                    Log.d("ShynaCall", "Ignoring Firestore update for current active call ${call.id}")
                                 } else {
-                                    // Start the call screen
+                                    Log.d("ShynaCall", "STARTING_APP_CALL_ACTIVITY_FROM_FIRESTORE id=${call.id}")
                                     val intent = Intent(this@MainActivity, AppCallActivity::class.java).apply {
                                         putExtra("callId", call.id)
                                         putExtra("isIncoming", true)

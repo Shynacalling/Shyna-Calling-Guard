@@ -37,8 +37,9 @@ class LiveKitCallManager(private val context: Context) {
     }
 
     suspend fun fetchToken(roomName: String, userId: String): String? = withContext(Dispatchers.IO) {
+        Log.d("ShynaCall", "TOKEN_REQUEST_STARTED room=$roomName user=$userId")
         if (!isNetworkAvailable()) {
-            println("LiveKit: No internet connection")
+            Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=no_internet")
             return@withContext null
         }
 
@@ -59,50 +60,63 @@ class LiveKitCallManager(private val context: Context) {
         try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    println("LiveKit: HTTP Error ${response.code}")
+                    Log.e("ShynaCall", "TOKEN_REQUEST_FAILED code=${response.code} url=$url")
                     return@withContext null
                 }
                 
-                val responseData = response.body?.string() ?: return@withContext null
-                if (responseData.isBlank()) return@withContext null
+                val responseData = response.body?.string() ?: run {
+                    Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=empty_body")
+                    return@withContext null
+                }
+                
+                if (responseData.isBlank()) {
+                    Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=blank_body")
+                    return@withContext null
+                }
 
                 try {
                     val result = gson.fromJson(responseData, JsonObject::class.java)
                     val token = result.get("token")?.asString
                     if (token.isNullOrBlank()) {
-                        println("LiveKit: Response missing token field")
+                        Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=missing_token_field data=$responseData")
                         null
                     } else {
+                        Log.d("ShynaCall", "TOKEN_REQUEST_SUCCESS")
                         token
                     }
                 } catch (e: Exception) {
-                    println("LiveKit: Malformed JSON response: ${e.message}")
+                    Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=malformed_json error=${e.message}")
                     null
                 }
             }
         } catch (e: Exception) {
+            Log.e("ShynaCall", "TOKEN_REQUEST_FAILED reason=exception error=${e.message}")
             e.printStackTrace()
             return@withContext null
         }
     }
 
     suspend fun joinRoom(roomName: String, userId: String): Room {
-        Log.d("ShynaCall", "[LIVEKIT] Joining Room: $roomName for User: $userId")
+        Log.d("ShynaCall", "JOIN_FLOW_STARTED ROOM_ID=$roomName")
+        Log.d("ShynaCall", "RTC_ENGINE_INIT_START")
+        
         val token = fetchToken(roomName, userId) 
         if (token == null) {
-            Log.e("ShynaCall", "[LIVEKIT] Token Fetch Failed for Room: $roomName")
+            Log.e("ShynaCall", "ROOM_CONNECT_FAILED reason=token_fetch_failed")
             throw IllegalStateException("Failed to fetch token")
         }
         
-        Log.d("ShynaCall", "[LIVEKIT] Token Received. Connecting to: ${LiveKitConfig.URL}")
+        Log.d("ShynaCall", "ROOM_CONNECT_START url=${LiveKitConfig.URL}")
         try {
             val r = LiveKit.create(context)
+            Log.d("ShynaCall", "RTC_ENGINE_INIT_SUCCESS")
+            
             r.connect(LiveKitConfig.URL, token)
-            Log.d("ShynaCall", "[LIVEKIT] Connected to Room: $roomName. State: ${r.state}")
+            Log.d("ShynaCall", "ROOM_CONNECT_SUCCESS state=${r.state}")
             room = r
             return r
         } catch (e: Exception) {
-            Log.e("ShynaCall", "[LIVEKIT] Connection failure: ${e.message}", e)
+            Log.e("ShynaCall", "ROOM_CONNECT_FAILED reason=connection_exception error=${e.message}")
             throw e
         }
     }

@@ -57,6 +57,7 @@ object CallStateController {
     }
 
     fun reportCallEvent(type: MainCallType, state: GlobalCallState, callId: String = "default", userId: String? = null) {
+        android.util.Log.d("ShynaCall", "REPORT_CALL_EVENT: type=$type state=$state id=$callId")
         val session = GlobalCallSession(callId, type, state, userId, System.currentTimeMillis())
         if (state == GlobalCallState.ENDED || state == GlobalCallState.FAILED) {
             activeSessions.remove(type)
@@ -78,7 +79,10 @@ object CallStateController {
 
         val topSession = sortedActive.firstOrNull()
         if (topSession == null) {
-            _globalState.value = GlobalCallState.IDLE
+            if (_globalState.value != GlobalCallState.IDLE) {
+                android.util.Log.d("ShynaCall", "GLOBAL_STATE_CHANGE: ${_globalState.value} -> IDLE")
+                _globalState.value = GlobalCallState.IDLE
+            }
             _activeSession.value = null
             return
         }
@@ -90,6 +94,10 @@ object CallStateController {
             }
         }
 
+        if (_globalState.value != topSession.state || _activeSession.value?.callId != topSession.callId) {
+            android.util.Log.d("ShynaCall", "GLOBAL_STATE_CHANGE: ${_globalState.value} -> ${topSession.state} (id=${topSession.callId})")
+        }
+        
         _activeSession.value = topSession
         _globalState.value = topSession.state
     }
