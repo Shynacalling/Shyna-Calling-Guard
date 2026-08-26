@@ -221,6 +221,8 @@ private fun SmartCommunicationContent(
     var selectedTab by remember { mutableStateOf(LinkTab.CHATS) }
     var search by remember { mutableStateOf("") }
     var archivedOpen by remember { mutableStateOf(false) }
+    var showArchivePicker by remember { mutableStateOf(false) }
+    var showSelectContact by remember { mutableStateOf(false) }
     var showGalleryByChatId by remember { mutableStateOf<String?>(null) }
     var showAudioPickerByChatId by remember { mutableStateOf<String?>(null) }
     var showCameraByChatId by remember { mutableStateOf<String?>(null) }
@@ -234,6 +236,7 @@ private fun SmartCommunicationContent(
     var showFindChannels by remember { mutableStateOf(false) }
     var showSearchInChatId by remember { mutableStateOf<String?>(null) }
     var forwardingMessage by remember { mutableStateOf<UniversalMessage?>(null) }
+    var showNewGroup by remember { mutableStateOf(false) }
     
     var pendingMedia by remember { mutableStateOf<List<Pair<Uri, Boolean>>?>(null) }
     var pendingMediaChatId by remember { mutableStateOf<String?>(null) }
@@ -276,7 +279,6 @@ private fun SmartCommunicationContent(
 
     var selectedFilter by remember { mutableStateOf("All") }
     var menuExpanded by remember { mutableStateOf(false) }
-    var showArchivePicker by remember { mutableStateOf(false) }
 
     val favouriteChatIds = remember { mutableStateSetOf<String>() }
     val customLists = remember { mutableStateListOf<CustomChatList>() }
@@ -810,24 +812,34 @@ private fun SmartCommunicationContent(
                                         onDismissRequest = { menuExpanded = false },
                                         modifier = Modifier.background(ShynaDesign.colors.HeaderBg)
                                     ) {
+                                        DropdownMenuItem(
+                                            text = { Text("New group", color = ShynaDesign.colors.TextPrimary) },
+                                            leadingIcon = { Icon(Icons.Outlined.GroupAdd, null, tint = ShynaDesign.colors.BrandGreen) },
+                                            onClick = { menuExpanded = false; showNewGroup = true }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Starred messages", color = ShynaDesign.colors.TextPrimary) },
+                                            leadingIcon = { Icon(Icons.Outlined.Star, null, tint = ShynaDesign.colors.BrandGreen) },
+                                            onClick = { menuExpanded = false; showStarredMessages = true }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Settings", color = ShynaDesign.colors.TextPrimary) },
+                                            leadingIcon = { Icon(Icons.Outlined.Settings, null, tint = ShynaDesign.colors.BrandGreen) },
+                                            onClick = { menuExpanded = false; selectedTab = LinkTab.YOU }
+                                        )
+                                        HorizontalDivider(color = ShynaDesign.colors.DividerColor)
                                         val secondaryFeatures = CallStateController.getSecondaryFeatures()
                                         secondaryFeatures.forEach { feature ->
-                                            when (feature) {
-                                                MainCallType.PHONE_DIALER -> {
-                                                    DropdownMenuItem(
-                                                        text = { Text("Phone Dialer", color = ShynaDesign.colors.TextPrimary) },
-                                                        leadingIcon = { Icon(Icons.Default.Call, null, tint = ShynaDesign.colors.BrandGreen) },
-                                                        onClick = { 
-                                                            menuExpanded = false
-                                                            CallStateController.setPrimaryFeature(MainCallType.PHONE_DIALER)
-                                                            onBack() 
-                                                        }
-                                                    )
-                                                }
-                                                MainCallType.SHYNA_LINK -> {
-                                                    // Already here
-                                                }
-                                                else -> {}
+                                            if (feature == MainCallType.PHONE_DIALER) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Phone Dialer", color = ShynaDesign.colors.TextPrimary) },
+                                                    leadingIcon = { Icon(Icons.Default.Call, null, tint = ShynaDesign.colors.BrandGreen) },
+                                                    onClick = { 
+                                                        menuExpanded = false
+                                                        CallStateController.setPrimaryFeature(MainCallType.PHONE_DIALER)
+                                                        onBack() 
+                                                    }
+                                                )
                                             }
                                         }
                                     }
@@ -862,6 +874,27 @@ private fun SmartCommunicationContent(
                         unreadUpdates = 0,
                         onSelect = { selectedTab = it }
                     )
+                },
+                floatingActionButton = {
+                    if (selectedTab == LinkTab.CHATS && !archivedOpen) {
+                        FloatingActionButton(
+                            onClick = { showSelectContact = true },
+                            containerColor = ShynaDesign.colors.BrandGreen,
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Icon(Icons.Default.Chat, contentDescription = "New Chat")
+                        }
+                    } else if (selectedTab == LinkTab.CALLS) {
+                        FloatingActionButton(
+                            onClick = { showSelectContact = true },
+                            containerColor = ShynaDesign.colors.BrandGreen,
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Icon(Icons.Default.Call, contentDescription = "New Call")
+                        }
+                    }
                 }
             ) { p ->
                 Box(Modifier.padding(p).fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
@@ -932,7 +965,7 @@ private fun SmartCommunicationContent(
                                 Toast.makeText(mContext, "Joined ${channel.name}", Toast.LENGTH_SHORT).show()
                             }
                         )
-                        LinkTab.CALLS -> CallsPage(currentUid ?: "", allUsers)
+                        LinkTab.CALLS -> CallsPage(currentUid ?: "", allUsers, onNewCall = { showSelectContact = true })
                         LinkTab.YOU -> {
                             val currentUser = allUsers.find { it.uid == currentUid }
                             if (showProfileEdit && currentUser != null) {
@@ -1024,210 +1057,32 @@ private fun SmartCommunicationContent(
             )
         }
 
-        if (showArchivePicker) {
-            Scaffold(
-                containerColor = ShynaDesign.colors.PrimaryBg,
-                topBar = {
-                    Column(Modifier.background(ShynaDesign.colors.HeaderBg).shadow(4.dp)) {
-                        TopAppBar(
-                            title = { 
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(if (archivedOpen) "Archived" else "Shyna Calling", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, fontSize = 22.sp)
-                                    if (!archivedOpen) {
-                                        Spacer(Modifier.width(8.dp))
-                                        Icon(Icons.Outlined.WorkspacePremium, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(20.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Surface(shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, ShynaDesign.colors.BrandGreen.copy(0.5f)), color = Color.Transparent) {
-                                            Text("Premium", modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), fontSize = 10.sp, color = ShynaDesign.colors.BrandGreen, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-                            },
-                            navigationIcon = { if (archivedOpen) IconButton(onClick = { archivedOpen = false }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, null, tint = ShynaDesign.colors.TextPrimary) } },
-                            actions = {
-                                if (archivedOpen) {
-                                    IconButton(onClick = { showArchivePicker = true }) { Icon(Icons.Outlined.Add, null, tint = ShynaDesign.colors.TextPrimary) }
-                                } else {
-                                    IconButton(onClick = { archivedOpen = true }) { Icon(Icons.Outlined.Archive, null, tint = ShynaDesign.colors.TextPrimary) }
-                                }
-                                Box {
-                                    IconButton(onClick = { menuExpanded = true }) { Icon(Icons.Outlined.MoreVert, null, tint = ShynaDesign.colors.TextPrimary) }
-                                    DropdownMenu(
-                                        expanded = menuExpanded,
-                                        onDismissRequest = { menuExpanded = false },
-                                        modifier = Modifier.background(ShynaDesign.colors.HeaderBg)
-                                    ) {
-                                        val secondaryFeatures = CallStateController.getSecondaryFeatures()
-                                        secondaryFeatures.forEach { feature ->
-                                            when (feature) {
-                                                MainCallType.PHONE_DIALER -> {
-                                                    DropdownMenuItem(
-                                                        text = { Text("Phone Dialer", color = ShynaDesign.colors.TextPrimary) },
-                                                        leadingIcon = { Icon(Icons.Default.Call, null, tint = ShynaDesign.colors.BrandGreen) },
-                                                        onClick = { 
-                                                            menuExpanded = false
-                                                            CallStateController.setPrimaryFeature(MainCallType.PHONE_DIALER)
-                                                            onBack() 
-                                                        }
-                                                    )
-                                                }
-                                                MainCallType.SHYNA_LINK -> {
-                                                    // Already here
-                                                }
-                                                else -> {}
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                        )
-                        if (!archivedOpen) {
-                            PremiumSearchBar(search, { search = it })
-                            if (selectedTab == LinkTab.CHATS) {
-                                PremiumFilterRow(
-                                    selectedFilter = selectedFilter,
-                                    customLists = customLists,
-                                    onFilterChange = { selectedFilter = it },
-                                    onAddClick = { showCreateListDialog = true },
-                                    onDeleteList = { name ->
-                                        customLists.removeAll { it.name == name }
-                                        saveCustomLists()
-                                    }
-                                )
-                                HorizontalDivider(color = ShynaDesign.colors.DividerColor, thickness = 0.5.dp)
-                            }
-                        }
-                    }
-                },
-                bottomBar = { 
-                    val unreadChatsCount by remember(recentChats) { derivedStateOf { recentChats.count { it.unreadCount > 0 } } }
-                    PremiumBottomBar(
-                        selected = selectedTab, 
-                        userPhotoUrl = allUsers.find { it.uid == currentUid }?.photoUrl,
-                        unreadChats = unreadChatsCount,
-                        unreadUpdates = 0,
-                        onSelect = { selectedTab = it }
-                    )
+        if (showSelectContact) {
+            SelectContactDialog(
+                users = allUsers,
+                onDismiss = { showSelectContact = false },
+                onSelect = { user ->
+                    showSelectContact = false
+                    selectedPeerId = user.uid
                 }
-            ) { p ->
-                Box(Modifier.padding(p).fillMaxSize().background(ShynaDesign.colors.PrimaryBg)) {
-                    when (selectedTab) {
-                        LinkTab.CHATS -> ChatsList(
-                            users = allUsers, 
-                            query = search, 
-                            filter = selectedFilter, 
-                            favourites = favouriteChatIds, 
-                            archived = archivedChatIds, 
-                            recentChats = recentChats, 
-                            customLists = customLists, 
-                            isArchivedMode = archivedOpen,
-                            onOpen = { selectedPeerId = it },
-                            onAvatarClick = { showFullDPUser = it },
-                            onToggleFav = { id -> 
-                                if (favouriteChatIds.contains(id)) favouriteChatIds.remove(id) 
-                                else favouriteChatIds.add(id)
-                                saveFavs()
-                            },
-                            onArchive = { id ->
-                                val uid = currentUid ?: return@ChatsList
-                                archivedChatIds.add(id)
-                                db.collection("users").document(uid).collection("archivedChats").document(id).set(mapOf("archived" to true, "timestamp" to Timestamp.now()))
-                                saveArchived()
-                            },
-                            onUnarchive = { id ->
-                                val uid = currentUid ?: return@ChatsList
-                                archivedChatIds.remove(id)
-                                db.collection("users").document(uid).collection("archivedChats").document(id).delete()
-                                saveArchived()
-                            },
-                            onMarkUnread = { id -> 
-                                val uid = currentUid ?: return@ChatsList
-                                db.collection("chats").document(id).update("unreadCount_$uid", 1) 
-                            },
-                            onDeleteChat = { id -> 
-                                db.collection("chats").document(id).delete()
-                                if (archivedChatIds.contains(id)) {
-                                    archivedChatIds.remove(id)
-                                    saveArchived()
-                                }
-                                if (favouriteChatIds.contains(id)) {
-                                    favouriteChatIds.remove(id)
-                                    saveFavs()
-                                }
-                            }
-                        )
-                        LinkTab.UPDATES -> UpdatesPage(
-                            currentUser = allUsers.find { it.uid == currentUid },
-                            allUsers = allUsers,
-                            statuses = allStatuses,
-                            channels = allChannels,
-                            onAddStatus = { statusImageLauncher.launch("image/*") },
-                            onViewStatus = { showStatusDetailFor = it },
-                            onOpenChannel = { showChannelDetailFor = it.id },
-                            onFindChannels = { showFindChannels = true }
-                        )
-                        LinkTab.COMMUNITIES -> CommunitiesPage(
-                            channels = allChannels,
-                            currentUser = allUsers.find { it.uid == currentUid },
-                            onJoin = { channel ->
-                                val uid = currentUid ?: return@CommunitiesPage
-                                db.collection("channels").document(channel.id)
-                                    .update("followersCount", FieldValue.increment(1))
-                                db.collection("users").document(uid)
-                                    .update("followedChannels", FieldValue.arrayUnion(channel.id))
-                                Toast.makeText(mContext, "Joined ${channel.name}", Toast.LENGTH_SHORT).show()
-                            }
-                        )
-                        LinkTab.CALLS -> CallsPage(currentUid ?: "", allUsers)
-                        LinkTab.YOU -> {
-                            val currentUser = allUsers.find { it.uid == currentUid }
-                            if (showProfileEdit && currentUser != null) {
-                                ProfileEditScreen(
-                                    user = currentUser,
-                                    onBack = { showProfileEdit = false },
-                                    onUpdateName = { newName ->
-                                        db.collection("users").document(currentUid!!).update("name", newName)
-                                    },
-                                    onUpdatePhoto = { uri ->
-                                        isUploading = true
-                                        MediaUploader.upload(uri, mContext) { url ->
-                                            isUploading = false
-                                            if (url != null) {
-                                                db.collection("users").document(currentUid!!).update("photoUrl", url)
-                                            }
-                                        }
-                                    },
-                                    onChangePhone = { newPhone ->
-                                        // WhatsApp style: require email verification for sensitive changes
-                                        auth.currentUser?.sendEmailVerification()?.addOnSuccessListener {
-                                            Toast.makeText(mContext, "Verification email sent to ${auth.currentUser?.email}. Verify to enable phone change.", Toast.LENGTH_LONG).show()
-                                            // In a real app, we'd listen for auth state change or wait for next login
-                                            // For now, we update if they are already verified or just show the process
-                                            if (auth.currentUser?.isEmailVerified == true) {
-                                                db.collection("users").document(currentUid!!).update("phone", newPhone)
-                                                Toast.makeText(mContext, "Phone number updated", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                )
-                            } else {
-                                YouPage(
-                                    user = currentUser, 
-                                    mode = themeMode, 
-                                    privacy = privacySettings,
-                                    storage = storageSettings,
-                                    onThemeChange = onThemeChange, 
-                                    onUpdatePrivacy = { privacySettings = it; db.collection("users").document(currentUid!!).collection("settings").document("privacy").set(it) },
-                                    onUpdateStorage = { storageSettings = it; db.collection("users").document(currentUid!!).collection("settings").document("storage").set(it) },
-                                    onLogout = { auth.signOut(); onBack() },
-                                    onOpenStarred = { showStarredMessages = true },
-                                    onEditProfile = { showProfileEdit = true }
-                                )
-                            }
-                        }
+            )
+        }
+
+        if (showNewGroup) {
+            val currentUser = allUsers.find { it.uid == currentUid }
+            if (currentUser != null) {
+                NewGroupScopedScreen(
+                    peer = currentUser,
+                    allUsers = allUsers,
+                    onBack = { showNewGroup = false },
+                    onCreate = { name, members ->
+                        // Handle group creation logic here or in the screen
+                        showNewGroup = false
+                        Toast.makeText(mContext, "Group $name created", Toast.LENGTH_SHORT).show()
                     }
-                }
+                )
+            } else {
+                showNewGroup = false
             }
         }
 
@@ -1273,6 +1128,7 @@ private fun SmartCommunicationContent(
                 }
             )
         }
+
 
         if (showFullDPUser != null) {
             PeerDetailScreen(
@@ -3738,7 +3594,7 @@ private fun CommunitiesPage(channels: List<ShynaChannel>, currentUser: RealUser?
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CallsPage(userId: String, allUsers: List<RealUser>) {
+private fun CallsPage(userId: String, allUsers: List<RealUser>, onNewCall: () -> Unit) {
     val db = FirebaseFirestore.getInstance()
     var history by remember { mutableStateOf<List<Map<String, Any>>>(emptyList()) }
     val mContext = LocalContext.current
@@ -3772,7 +3628,8 @@ private fun CallsPage(userId: String, allUsers: List<RealUser>) {
                 headlineContent = { Text("Create call link", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
                 supportingContent = { Text("Share a link for your Shyna call", color = ShynaDesign.colors.TextSecondary) },
                 leadingContent = { Surface(Modifier.size(48.dp), shape = CircleShape, color = ShynaDesign.colors.BrandGreen) { Icon(Icons.Default.Link, null, tint = Color.White, modifier = Modifier.padding(12.dp)) } },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier.clickable { Toast.makeText(mContext, "Call link feature coming soon!", Toast.LENGTH_SHORT).show() }
             )
             Text("Recent", Modifier.padding(16.dp), fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
             
@@ -4453,8 +4310,11 @@ private fun YouPage(
     val mContext = LocalContext.current
     var showStorageSettings by remember { mutableStateOf(false) }
     var showPrivacySettings by remember { mutableStateOf(false) }
-    
+    var showAccountSettings by remember { mutableStateOf(false) }
+    var showChatSettings by remember { mutableStateOf(false) }
     var showNetworkUsage by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
+    var showInvite by remember { mutableStateOf(false) }
     
     if (showStorageSettings) {
         StorageSettingsDialog(
@@ -4471,9 +4331,34 @@ private fun YouPage(
     if (showPrivacySettings) {
         PrivacySettingsDialog(
             current = privacy,
+            userId = user?.uid ?: "",
             onDismiss = { showPrivacySettings = false },
             onSave = onUpdatePrivacy
         )
+    }
+
+    if (showAccountSettings) {
+        AccountSettingsDialog(
+            user = user,
+            onDismiss = { showAccountSettings = false },
+            onLogout = onLogout
+        )
+    }
+
+    if (showChatSettings) {
+        ChatSettingsDialog(
+            mode = mode,
+            onThemeChange = onThemeChange,
+            onDismiss = { showChatSettings = false }
+        )
+    }
+
+    if (showHelp) {
+        HelpDialog(onDismiss = { showHelp = false })
+    }
+
+    if (showInvite) {
+        InviteDialog(onDismiss = { showInvite = false })
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -4505,15 +4390,14 @@ private fun YouPage(
         ProfileItem("Profile", "Name, status, phone number", Icons.Outlined.Person) {
             onEditProfile()
         }
-        ProfileItem("Account", "Privacy, security, change number", Icons.Outlined.Key) {
-            showPrivacySettings = true
+        ProfileItem("Account", "Security, change number, delete account", Icons.Outlined.Key) {
+            showAccountSettings = true
         }
         ProfileItem("Privacy", "Block contacts, disappearing messages", Icons.Outlined.Lock) {
             showPrivacySettings = true
         }
         ProfileItem("Chats", "Theme, wallpapers, chat history", Icons.Outlined.Chat) {
-            // Simplified chat theme toggle for now since we have a separate Dark Mode switch
-            Toast.makeText(mContext, "Chat settings linked to global theme", Toast.LENGTH_SHORT).show()
+            showChatSettings = true
         }
         ProfileItem("Starred Messages", "View all your starred messages", Icons.Outlined.Star) {
             onOpenStarred()
@@ -4525,14 +4409,14 @@ private fun YouPage(
             showNetworkUsage = true
         }
         
-        ListItem(
-            headlineContent = { Text("Dark Mode", color = ShynaDesign.colors.TextPrimary) },
-            supportingContent = { Text(if(mode == ThemeMode.DARK) "On" else "Off", color = ShynaDesign.colors.TextSecondary) },
-            leadingContent = { Icon(Icons.Default.DarkMode, null, tint = ShynaDesign.colors.TextSecondary) },
-            trailingContent = { Switch(mode == ThemeMode.DARK, { onThemeChange(if (it) ThemeMode.DARK else ThemeMode.LIGHT) }, colors = SwitchDefaults.colors(checkedThumbColor = ShynaDesign.colors.BrandGreen)) },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-        )
-        
+        ProfileItem("Help", "Help center, contact us, privacy policy", Icons.Outlined.HelpOutline) {
+            showHelp = true
+        }
+        ProfileItem("Invite a friend", "Invite your friends to Shyna Calling", Icons.Outlined.GroupAdd) {
+            showInvite = true
+        }
+
+        Spacer(Modifier.height(24.dp))
         TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Text("Logout", color = Color.Red, fontWeight = FontWeight.Bold)
         }
@@ -4619,6 +4503,7 @@ private fun StorageMediaOption(label: String, selected: Set<String>, onUpdate: (
 @Composable
 private fun PrivacySettingsDialog(
     current: UserPrivacySettings,
+    userId: String,
     onDismiss: () -> Unit,
     onSave: (UserPrivacySettings) -> Unit
 ) {
@@ -4629,9 +4514,15 @@ private fun PrivacySettingsDialog(
     var readReceipts by remember { mutableStateOf(current.readReceipts) }
     var disappearingMsgs by remember { mutableIntStateOf(current.disappearingMessages) }
 
+    var showBlockedList by remember { mutableStateOf(false) }
+
+    if (showBlockedList) {
+        BlockedListDialog(userId = userId, onDismiss = { showBlockedList = false })
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Privacy Settings", color = ShynaDesign.colors.TextPrimary) },
+        title = { Text("Privacy", color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 PrivacyOption("Last seen", lastSeen, listOf("Everyone", "My Contacts", "Nobody")) { lastSeen = it }
@@ -4654,6 +4545,13 @@ private fun PrivacySettingsDialog(
                         else -> 0
                     }
                 }
+
+                ListItem(
+                    headlineContent = { Text("Blocked contacts", color = ShynaDesign.colors.TextPrimary) },
+                    leadingContent = { Icon(Icons.Default.Block, null, tint = ShynaDesign.colors.TextSecondary) },
+                    modifier = Modifier.clickable { showBlockedList = true },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
             }
         },
         confirmButton = { 
@@ -6433,4 +6331,268 @@ private fun SocialLoginButton(
             Text(text, fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 16.sp)
         }
     }
+}
+
+@Composable
+private fun SelectContactDialog(
+    users: List<RealUser>,
+    onDismiss: () -> Unit,
+    onSelect: (RealUser) -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(users, query) {
+        users.filter { it.name.contains(query, true) || it.userId.contains(query, true) }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("Select contact", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
+                Spacer(Modifier.height(8.dp))
+                PremiumSearchBar(query = query, onQueryChange = { query = it })
+            }
+        },
+        text = {
+            if (filtered.isEmpty()) {
+                Box(Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
+                    Text("No contacts found", color = ShynaDesign.colors.TextSecondary)
+                }
+            } else {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(filtered) { user ->
+                        ListItem(
+                            headlineContent = { Text(user.name, color = ShynaDesign.colors.TextPrimary) },
+                            supportingContent = { Text(user.userId, color = ShynaDesign.colors.TextSecondary) },
+                            leadingContent = {
+                                Surface(Modifier.size(40.dp), shape = CircleShape, color = ShynaDesign.colors.DividerColor) {
+                                    if (!user.photoUrl.isNullOrBlank()) AsyncImage(user.photoUrl, null, contentScale = ContentScale.Crop)
+                                    else Box(contentAlignment = Alignment.Center) { Text(user.name.take(1).uppercase(), color = ShynaDesign.colors.BrandGreen, fontWeight = FontWeight.Bold) }
+                                }
+                            },
+                            modifier = Modifier.clickable { onSelect(user) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
+}
+
+@Composable
+private fun AccountSettingsDialog(
+    user: RealUser?,
+    onDismiss: () -> Unit,
+    onLogout: () -> Unit
+) {
+    val mContext = LocalContext.current
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Account?", color = Color.Red, fontWeight = FontWeight.Bold) },
+            text = { Text("This action is permanent and cannot be undone. All your chats and data will be erased from Shyna servers.") },
+            confirmButton = {
+                TextButton(onClick = { 
+                    FirebaseAuth.getInstance().currentUser?.delete()
+                    onLogout()
+                    onDismiss()
+                }) { Text("DELETE", color = Color.Red, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("CANCEL") } },
+            containerColor = ShynaDesign.colors.SurfaceBg
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Account", color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                AccountOption("Security notifications", "Get notified when your security code changes", Icons.Outlined.Shield) {
+                    Toast.makeText(mContext, "Security notifications enabled", Toast.LENGTH_SHORT).show()
+                }
+                AccountOption("Two-step verification", "Add extra security to your account", Icons.Outlined.VerifiedUser) {
+                    Toast.makeText(mContext, "Two-step verification is active via Shyna Secure", Toast.LENGTH_SHORT).show()
+                }
+                AccountOption("Change number", "Migrate your account info to a new number", Icons.Outlined.Smartphone) {
+                    Toast.makeText(mContext, "Please contact support to change your verified phone number", Toast.LENGTH_LONG).show()
+                }
+                AccountOption("Request account info", "Get a report of your account info", Icons.Outlined.Description) {
+                    Toast.makeText(mContext, "Request sent. Report will be ready in 3 days.", Toast.LENGTH_LONG).show()
+                }
+                AccountOption("Delete account", "Permanently delete your account", Icons.Outlined.Delete, Color.Red) {
+                    showDeleteConfirm = true
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = ShynaDesign.colors.BrandGreen) } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
+}
+
+@Composable
+private fun AccountOption(title: String, subtitle: String, icon: ImageVector, color: Color = ShynaDesign.colors.TextPrimary, onClick: () -> Unit) {
+    ListItem(
+        headlineContent = { Text(title, color = color) },
+        supportingContent = { Text(subtitle, color = ShynaDesign.colors.TextSecondary, fontSize = 12.sp) },
+        leadingContent = { Icon(icon, null, tint = ShynaDesign.colors.TextSecondary) },
+        modifier = Modifier.clickable(onClick = onClick),
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+    )
+}
+
+@Composable
+private fun ChatSettingsDialog(
+    mode: ThemeMode,
+    onThemeChange: (ThemeMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val mContext = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Chats", color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                Text("Display", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 14.sp)
+                ListItem(
+                    headlineContent = { Text("Dark Mode", color = ShynaDesign.colors.TextPrimary) },
+                    supportingContent = { Text(if(mode == ThemeMode.DARK) "On" else "Off", color = ShynaDesign.colors.TextSecondary) },
+                    leadingContent = { Icon(Icons.Default.DarkMode, null, tint = ShynaDesign.colors.TextSecondary) },
+                    trailingContent = { Switch(mode == ThemeMode.DARK, { onThemeChange(if (it) ThemeMode.DARK else ThemeMode.LIGHT) }, colors = SwitchDefaults.colors(checkedThumbColor = ShynaDesign.colors.BrandGreen)) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+                ListItem(
+                    headlineContent = { Text("Wallpaper", color = ShynaDesign.colors.TextPrimary) },
+                    leadingContent = { Icon(Icons.Outlined.Wallpaper, null, tint = ShynaDesign.colors.TextSecondary) },
+                    modifier = Modifier.clickable { Toast.makeText(mContext, "Premium Wallpapers coming soon!", Toast.LENGTH_SHORT).show() },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+                
+                Spacer(Modifier.height(16.dp))
+                Text("Chat settings", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 14.sp)
+                ListItem(
+                    headlineContent = { Text("Enter is send", color = ShynaDesign.colors.TextPrimary) },
+                    supportingContent = { Text("Enter key will send your message", color = ShynaDesign.colors.TextSecondary) },
+                    trailingContent = { Switch(true, {}, colors = SwitchDefaults.colors(checkedThumbColor = ShynaDesign.colors.BrandGreen)) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+                ListItem(
+                    headlineContent = { Text("Media visibility", color = ShynaDesign.colors.TextPrimary) },
+                    supportingContent = { Text("Show newly downloaded media in your phone's gallery", color = ShynaDesign.colors.TextSecondary) },
+                    trailingContent = { Switch(true, {}, colors = SwitchDefaults.colors(checkedThumbColor = ShynaDesign.colors.BrandGreen)) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = ShynaDesign.colors.BrandGreen) } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
+}
+
+@Composable
+private fun HelpDialog(onDismiss: () -> Unit) {
+    val mContext = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Help", color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                HelpItem("Help Center", "Get answers, view documentation", Icons.Outlined.HelpCenter)
+                HelpItem("Contact us", "Questions? Need help?", Icons.Outlined.SupportAgent)
+                HelpItem("Terms and Privacy Policy", "", Icons.Outlined.Description)
+                HelpItem("App info", "", Icons.Outlined.Info)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = ShynaDesign.colors.BrandGreen) } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
+}
+
+@Composable
+private fun HelpItem(title: String, subtitle: String, icon: ImageVector) {
+    val mContext = LocalContext.current
+    ListItem(
+        headlineContent = { Text(title, color = ShynaDesign.colors.TextPrimary) },
+        supportingContent = if(subtitle.isNotEmpty()) { { Text(subtitle, color = ShynaDesign.colors.TextSecondary, fontSize = 12.sp) } } else null,
+        leadingContent = { Icon(icon, null, tint = ShynaDesign.colors.TextSecondary) },
+        modifier = Modifier.clickable { Toast.makeText(mContext, "$title opened", Toast.LENGTH_SHORT).show() },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+    )
+}
+
+@Composable
+private fun InviteDialog(onDismiss: () -> Unit) {
+    val mContext = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Invite a friend", color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Share, null, modifier = Modifier.size(48.dp), tint = ShynaDesign.colors.BrandGreen)
+                Spacer(Modifier.height(16.dp))
+                Text("Share Shyna Calling with your friends and family to start secure conversations.", textAlign = TextAlign.Center, color = ShynaDesign.colors.TextSecondary)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { 
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, "Hey! Download Shyna Calling for secure and smart communication. Join me here!")
+                    }
+                    mContext.startActivity(Intent.createChooser(intent, "Invite via"))
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen)
+            ) { Text("Invite") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Later") } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
+}
+
+@Composable
+private fun BlockedListDialog(userId: String, onDismiss: () -> Unit) {
+    val db = FirebaseFirestore.getInstance()
+    var blockedUsers by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+
+    LaunchedEffect(userId) {
+        db.collection("users").document(userId).collection("blockedUsers")
+            .addSnapshotListener { snapshot, _ ->
+                snapshot?.let {
+                    blockedUsers = it.documents.map { d -> d.id to (d.getString("name") ?: "Blocked User") }
+                }
+            }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Blocked contacts", fontWeight = FontWeight.Bold) },
+        text = {
+            if (blockedUsers.isEmpty()) {
+                Text("No blocked contacts", color = ShynaDesign.colors.TextSecondary)
+            } else {
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(blockedUsers) { (uid, name) ->
+                        ListItem(
+                            headlineContent = { Text(name, color = ShynaDesign.colors.TextPrimary) },
+                            trailingContent = { 
+                                TextButton(onClick = { 
+                                    db.collection("users").document(userId).collection("blockedUsers").document(uid).delete()
+                                }) { Text("UNBLOCK", color = ShynaDesign.colors.BrandGreen) }
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        containerColor = ShynaDesign.colors.SurfaceBg
+    )
 }
