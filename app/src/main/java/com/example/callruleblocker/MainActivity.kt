@@ -313,7 +313,7 @@ class MainActivity : FragmentActivity() {
                                     
                                     processedCallIds.add(call.id)
                                     scope.launch {
-                                        delay(5000) // Cleanup after 5s for testing
+                                        delay(8000) // 8s safety window
                                         processedCallIds.remove(call.id)
                                     }
 

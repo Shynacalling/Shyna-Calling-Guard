@@ -114,7 +114,7 @@ class LiveKitCallManager(private val context: Context) {
         Log.d("ShynaCall", "ROOM_CONNECT_START url=${LiveKitConfig.URL}")
         try {
             val r = LiveKit.create(context)
-            Log.d("ShynaCall", "RTC_ENGINE_INIT_SUCCESS. Connecting with token...")
+            Log.d("ShynaCall", "RTC_ENGINE_INIT_SUCCESS. Attempting connection to ${LiveKitConfig.URL}")
             
             r.connect(LiveKitConfig.URL, token)
             Log.d("ShynaCall", "ROOM_CONNECT_SUCCESS sid=${r.sid} state=${r.state}")
@@ -122,8 +122,11 @@ class LiveKitCallManager(private val context: Context) {
             return r
         } catch (e: Exception) {
             Log.e("ShynaCall", "ROOM_CONNECT_FAILED error=${e.message}", e)
-            if (e.message?.contains("401") == true || e.message?.contains("unauthorized") == true) {
-                Log.e("ShynaCall", "CRITICAL: LiveKit server rejected token (401). Please verify LIVEKIT_API_KEY and LIVEKIT_API_SECRET on your Render server match the ones in your LiveKit Cloud project (kn60m55l).")
+            val msg = e.message?.lowercase() ?: ""
+            if (msg.contains("401") || msg.contains("unauthorized")) {
+                Log.e("ShynaCall", "CRITICAL: LiveKit server rejected token (401). Please verify LIVEKIT_API_KEY and LIVEKIT_API_SECRET on Render dashboard for project kn60m55l.")
+            } else if (msg.contains("region") || msg.contains("fetch")) {
+                Log.e("ShynaCall", "NETWORK_ERROR: Could not reach LiveKit Cloud. Check project ID kn60m55l and internet connection.")
             }
             throw e
         }
