@@ -306,11 +306,14 @@ class MainActivity : FragmentActivity() {
                                     com.example.callruleblocker.call.CallSignalingManager.updateCallStatus(call.id, com.example.callruleblocker.call.AppCallStatus.REJECTED, "user_busy_firestore")
                                 } else {
                                     // Prevent rapid re-launch loops for the SAME call
-                                    if (processedCallIds.contains(call.id)) return@listenForIncomingCalls
+                                    if (processedCallIds.contains(call.id)) {
+                                        Log.d("ShynaCall", "Call ${call.id} already processed, skipping Firestore launch.")
+                                        return@listenForIncomingCalls
+                                    }
                                     
                                     processedCallIds.add(call.id)
                                     scope.launch {
-                                        delay(15000) // Increase window to 15s
+                                        delay(5000) // Cleanup after 5s for testing
                                         processedCallIds.remove(call.id)
                                     }
 

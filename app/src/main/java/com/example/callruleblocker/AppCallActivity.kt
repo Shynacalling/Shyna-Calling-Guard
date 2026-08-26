@@ -312,6 +312,8 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAcceptState: State<Bo
                 @Suppress("DEPRECATION")
                 audioManager.requestAudioFocus(null, AudioManager.STREAM_VOICE_CALL, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
             }
+            
+            Log.d("ShynaCall", "[AUDIO] Volume: ${audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/${audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)}")
         } catch (e: Exception) {
             Log.e("ShynaCall", "[AUDIO] Route Error: ${e.message}")
         }
@@ -363,18 +365,14 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAcceptState: State<Bo
                         room = r
                         Log.d("ShynaCall", "ROOM_CONNECT_SUCCESS id=${call!!.roomName}")
                         
-                        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
                         routeAudio(isSpeakerOn)
                         
                         scope.launch { 
-                            delay(1500) 
-                            r.localParticipant.setMicrophoneEnabled(true)
-                            val micActive = r.localParticipant.isMicrophoneEnabled
-                            Log.d("ShynaCall", "AUDIO_TRACK_PUBLISHED status=$micActive")
-                            if (!micActive) {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, "Microphone could not be activated. Check permissions.", Toast.LENGTH_SHORT).show()
-                                }
+                            delay(2000) // 2s for RTC settles
+                            if (room?.state == Room.State.CONNECTED) {
+                                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                                r.localParticipant.setMicrophoneEnabled(true)
+                                Log.d("ShynaCall", "AUDIO_TRACK_PUBLISHED status=${r.localParticipant.isMicrophoneEnabled}")
                             }
                         }
                         
@@ -511,7 +509,7 @@ fun AppCallScreen(callId: String, isIncoming: Boolean, autoAcceptState: State<Bo
                 AppCallStatus.ACCEPTED, AppCallStatus.CONNECTED -> {
                     CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ACTIVE, callId)
                 }
-                AppCallStatus.ENDED, AppCallStatus.REJECTED, AppCallStatus.MISSED -> {
+                AppCallStatus.ENDED, AppCallStatus.REJECTED, AppCallStatus.MISSED, AppCallStatus.FAILED -> {
                     Log.d("ShynaCall", "[SIGNAL] Call Terminated by Signaling (status=${updatedCall.status}). Reason=${updatedCall.endReason}")
                     CallStateController.reportCallEvent(MainCallType.SHYNA_LINK, GlobalCallState.ENDED, callId)
                     onExit()
