@@ -2188,14 +2188,6 @@ private fun ContactsScreen(query: String, contactsRevision: Int, onCall: (String
     }
 }
 
-@Composable
-private fun AiBulletPoint(text: String) {
-    Row(Modifier.padding(vertical = 4.dp.scaled())) {
-        Text("•", color = Color(0xFF24C98A), fontWeight = FontWeight.Bold, fontSize = 14.sp.scaled())
-        Spacer(Modifier.width(8.dp.scaled())); Text(text, color = Color(0xFFBDB7C7), fontSize = 14.sp.scaled(), lineHeight = 20.sp.scaled())
-    }
-}
-
 private fun favouriteCardColor(name: String): Color {
     val palette = listOf(Color(0xFFD77EB8), Color(0xFFFFAE71), Color(0xFF75C5B9), Color(0xFFA680E4), Color(0xFF6F9ED6))
     return palette[abs(name.hashCode()) % palette.size]
@@ -2217,10 +2209,22 @@ private fun RecentNumberDetailsScreen(number: String, onBack: () -> Unit, onCall
     DisposableEffect(Unit) { onDispose { RecordingPlayback.stopAndRelease(player); player = null; resetRecordingAudioRoute(audioManager) } }
     
     var recordings by remember { mutableStateOf<List<File>>(emptyList()) }
+    var aiSummary by remember { mutableStateOf<String?>(null) }
+    var loadingSummary by remember { mutableStateOf(false) }
+
     LaunchedEffect(number) { 
         withContext(Dispatchers.IO) {
             calls = runCatching { loadRecentCalls(context).filter { normalizePhone(it.number) == normalizePhone(number) } }.getOrDefault(emptyList()) 
-            recordings = SamsungRecordingHelper.findRecordings(context, number)
+            val foundRecs = SamsungRecordingHelper.findRecordings(context, number)
+            recordings = foundRecs
+            
+            if (foundRecs.isNotEmpty()) {
+                loadingSummary = true
+                aiSummary = com.example.callruleblocker.data.GeminiManager.generateSummary(foundRecs.first())
+                loadingSummary = false
+            } else {
+                aiSummary = null
+            }
         }
     }
     
@@ -2254,7 +2258,27 @@ private fun RecentNumberDetailsScreen(number: String, onBack: () -> Unit, onCall
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().background(Color.Black).padding(padding), contentPadding = PaddingValues(horizontal = 12.dp.scaled(), vertical = 7.dp.scaled()), verticalArrangement = Arrangement.spacedBy(9.dp.scaled())) {
             item { Surface(shape = RoundedCornerShape(16.dp.scaled()), color = Color(0xFF18181C), modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(horizontal = 15.dp.scaled(), vertical = 12.dp.scaled())) { Text("Call history", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 17.sp.scaled()); Text("${calls.size} calls", color = Color(0xFFB9B3BF), fontSize = 14.sp.scaled()) } } }
-            if (recordings.isNotEmpty()) { item { Surface(shape = RoundedCornerShape(16.dp.scaled()), color = Color(0xFF1B1B21), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF24C98A).copy(alpha = 0.3f))) { Column(Modifier.padding(18.dp.scaled())) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.AutoAwesome, null, tint = Color(0xFF24C98A), modifier = Modifier.size(16.dp.scaled())); Spacer(Modifier.width(10.dp.scaled())); Text("AI Summary", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp.scaled()) }; Spacer(Modifier.height(14.dp.scaled())); AiBulletPoint("Meeting follow-up agreed."); Spacer(Modifier.height(10.dp.scaled())); Text("Secure Summary", color = Color(0xFF7A7485), fontSize = 10.sp.scaled()) } } } }
+            if (recordings.isNotEmpty()) { 
+                item { 
+                    Surface(shape = RoundedCornerShape(16.dp.scaled()), color = Color(0xFF1B1B21), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF24C98A).copy(alpha = 0.3f))) { 
+                        Column(Modifier.padding(18.dp.scaled())) { 
+                            Row(verticalAlignment = Alignment.CenterVertically) { 
+                                Icon(Icons.Outlined.AutoAwesome, null, tint = Color(0xFF24C98A), modifier = Modifier.size(16.dp.scaled())); 
+                                Spacer(Modifier.width(10.dp.scaled())); 
+                                Text("AI Summary", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp.scaled()) 
+                            }; 
+                            Spacer(Modifier.height(14.dp.scaled())); 
+                            if (loadingSummary) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Color(0xFF24C98A), trackColor = Color.White.copy(0.1f))
+                            } else {
+                                Text(aiSummary ?: "Generating summary...", color = Color.White, fontSize = 14.sp.scaled())
+                            }
+                            Spacer(Modifier.height(10.dp.scaled())); 
+                            Text("Secure Summary • Shyna AI (Gemini)", color = Color(0xFF7A7485), fontSize = 10.sp.scaled()) 
+                        } 
+                    } 
+                } 
+            }
             groupedCalls.forEach { (_, dayCalls) ->
                 item { Text(detailDayLabel(dayCalls.first().date), color = Color(0xFFB7B1BE), fontSize = 14.sp.scaled(), fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 14.dp.scaled(), top = 3.dp.scaled())) }
                 item { 

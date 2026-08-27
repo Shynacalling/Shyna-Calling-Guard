@@ -239,6 +239,10 @@ private fun SmartCommunicationContent(
     var forwardingMessage by remember { mutableStateOf<UniversalMessage?>(null) }
     var showNewGroup by remember { mutableStateOf(false) }
     
+    var aiQuery by remember { mutableStateOf<String?>(null) }
+    var aiResponse by remember { mutableStateOf<String?>(null) }
+    var isAiLoading by remember { mutableStateOf(false) }
+
     var pendingMedia by remember { mutableStateOf<List<Pair<Uri, Boolean>>?>(null) }
     var pendingMediaChatId by remember { mutableStateOf<String?>(null) }
     var isUploading by remember { mutableStateOf(false) }
@@ -869,7 +873,14 @@ private fun SmartCommunicationContent(
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                         )
                         if (!archivedOpen) {
-                            PremiumSearchBar(search, { search = it })
+                            PremiumSearchBar(search, { search = it }, onAiQuery = {
+                                aiQuery = it
+                                isAiLoading = true
+                                scope.launch {
+                                    aiResponse = com.example.callruleblocker.data.GeminiManager.askAi(it)
+                                    isAiLoading = false
+                                }
+                            })
                             if (selectedTab == LinkTab.CHATS) {
                                 PremiumFilterRow(
                                     selectedFilter = selectedFilter,
@@ -1191,6 +1202,36 @@ private fun SmartCommunicationContent(
             )
         }
 
+        if (aiQuery != null) {
+            AlertDialog(
+                onDismissRequest = { aiQuery = null; aiResponse = null },
+                title = { 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = ShynaDesign.colors.BrandGreen)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Shyna AI", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
+                    }
+                },
+                text = {
+                    Column {
+                        Text("Query: $aiQuery", style = MaterialTheme.typography.labelMedium, color = ShynaDesign.colors.TextSecondary)
+                        Spacer(Modifier.height(16.dp))
+                        if (isAiLoading) {
+                            CircularProgressIndicator(color = ShynaDesign.colors.BrandGreen)
+                        } else {
+                            Text(aiResponse ?: "No response from AI.", color = ShynaDesign.colors.TextPrimary)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { aiQuery = null; aiResponse = null }) {
+                        Text("Close", color = ShynaDesign.colors.BrandGreen)
+                    }
+                },
+                containerColor = ShynaDesign.colors.SurfaceBg
+            )
+        }
+
         if (isUploading) {
             Box(
                 Modifier.fillMaxSize().background(Color.Black.copy(0.6f)).clickable(enabled = false) {},
@@ -1277,7 +1318,7 @@ private fun ForwardChatPicker(
 }
 
 @Composable
-private fun PremiumSearchBar(query: String, onQueryChange: (String) -> Unit) {
+private fun PremiumSearchBar(query: String, onQueryChange: (String) -> Unit, onAiQuery: ((String) -> Unit)? = null) {
     Surface(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), 
         shape = RoundedCornerShape(32.dp), 
@@ -1291,9 +1332,13 @@ private fun PremiumSearchBar(query: String, onQueryChange: (String) -> Unit) {
                 value = query, onValueChange = onQueryChange,
                 modifier = Modifier.weight(1f),
                 textStyle = TextStyle(color = ShynaDesign.colors.TextPrimary, fontSize = 17.sp),
-                decorationBox = { if (query.isEmpty()) Text("Ask Shyna Search or Meta AI", color = ShynaDesign.colors.TextSecondary); it() }
+                decorationBox = { if (query.isEmpty()) Text(if(onAiQuery != null) "Ask Shyna AI (Gemini)" else "Search", color = ShynaDesign.colors.TextSecondary); it() }
             )
-            Icon(Icons.Default.AutoAwesome, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(22.dp))
+            if (onAiQuery != null) {
+                IconButton(onClick = { if (query.isNotBlank()) onAiQuery(query) }, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.AutoAwesome, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(22.dp))
+                }
+            }
         }
     }
 }
@@ -1467,6 +1512,80 @@ private fun isSameDay(t1: Long, t2: Long): Boolean {
     return d1.get(Calendar.YEAR) == d2.get(Calendar.YEAR) && d1.get(Calendar.DAY_OF_YEAR) == d2.get(Calendar.DAY_OF_YEAR)
 }
 
+private fun openMessageItem(
+    context: Context,
+    scope: CoroutineScope,
+    m: UniversalMessage,
+    onMediaClick: (UniversalMessage) -> Unit = {},
+    onOpenContact: (UniversalMessage) -> Unit = {}
+) {
+    if (m.deleteForEveryone) return
+
+    when (m.messageType) {
+        MessageType.IMAGE, MessageType.VIDEO -> {
+            onMediaClick(m)
+        }
+        MessageType.DOC -> {
+            DocInteraction.downloadAndOpen(context, scope, m)
+        }
+        MessageType.LOCATION, MessageType.LIVE_LOCATION -> {
+            val loc = m.metadata ?: "0,0"
+            val cleanLoc = if (m.messageType == MessageType.LIVE_LOCATION) {
+                loc.removePrefix("LIVE|").substringBefore("|")
+            } else {
+                loc.substringBefore("|")
+            }
+            val parts = cleanLoc.split(",")
+            val lat = parts.getOrNull(0)?.toDoubleOrNull() ?: 0.0
+            val lon = parts.getOrNull(1)?.toDoubleOrNull() ?: 0.0
+            val label = m.fileName ?: m.caption ?: "Shared Location"
+
+            val geoUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon($label)")
+            val mapIntent = Intent(Intent.ACTION_VIEW, geoUri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(mapIntent)
+            } catch (e: Exception) {
+                val browserUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=$lat,$lon")
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, browserUri).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                }.onFailure {
+                    Toast.makeText(context, "Cannot open map", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        MessageType.LINK -> {
+            var url = m.text.trim()
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                url = "https://$url"
+            }
+            runCatching {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                context.startActivity(intent)
+            }.onFailure {
+                Toast.makeText(context, "Cannot open link", Toast.LENGTH_SHORT).show()
+            }
+        }
+        MessageType.CONTACT -> {
+            onOpenContact(m)
+        }
+        else -> {
+            val textOrMeta = (m.metadata ?: m.text).trim()
+            if (textOrMeta.startsWith("http://") || textOrMeta.startsWith("https://")) {
+                val ext = textOrMeta.substringBefore("?").substringAfterLast(".", "").lowercase()
+                if (ext in listOf("pdf", "doc", "docx", "xls", "xlsx", "apk", "zip", "m4a", "mp3")) {
+                    DocInteraction.downloadAndOpen(context, scope, m)
+                } else {
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(textOrMeta)).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun SmartChatDetailScreen(
@@ -1513,101 +1632,91 @@ private fun SmartChatDetailScreen(
     var showRsvpFor by remember { mutableStateOf<UniversalMessage?>(null) }
     
     var pendingDocument by remember { mutableStateOf<Map<String, Any>?>(null) }
+    var pendingContactInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
+    var showContactDetailsFor by remember { mutableStateOf<UniversalMessage?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         val onVote: (UniversalMessage, Int) -> Unit = { m, index ->
-        val attempts = (m.interactionAttempts[userId] ?: 0)
-        val lastTime = m.lastInteractionTime[userId] ?: 0L
-        val now = System.currentTimeMillis()
-        
-        val canInteractionNow = when {
-            attempts < 2 -> true
-            attempts == 2 -> (now - lastTime) >= 5 * 60 * 60 * 1000L
-            else -> false
+            val attempts = (m.interactionAttempts[userId] ?: 0)
+            val firstTime = m.firstInteractionTime[userId] ?: m.lastInteractionTime[userId] ?: 0L
+            val now = System.currentTimeMillis()
+            
+            val isTimeLocked = firstTime > 0L && (now - firstTime >= 30 * 60 * 1000L)
+
+            if (attempts >= 5) {
+                Toast.makeText(mContext, "Maximum 5 attempts reached. Vote is final.", Toast.LENGTH_SHORT).show()
+            } else if (isTimeLocked) {
+                Toast.makeText(mContext, "Voting locked (30 min time limit reached)", Toast.LENGTH_SHORT).show()
+            } else {
+                val votes = m.pollVotes.toMutableMap()
+                val key = index.toString()
+                
+                val newAttempts = attempts + 1
+                val newFirstTime = if (firstTime == 0L) now else firstTime
+                
+                if (m.allowMultipleAnswers) {
+                    val list = (votes[key] ?: emptyList()).toMutableList()
+                    if (list.contains(userId)) list.remove(userId) else list.add(userId)
+                    votes[key] = list
+                } else {
+                    votes.keys.forEach { k ->
+                        val l = (votes[k] ?: emptyList()).toMutableList()
+                        if (l.contains(userId)) {
+                            l.remove(userId)
+                            votes[k] = l
+                        }
+                    }
+                    val newList = (votes[key] ?: emptyList()).toMutableList()
+                    newList.add(userId)
+                    votes[key] = newList
+                }
+                
+                db.collection("chats").document(chatId).collection("messages").document(m.id).update(
+                    "pollVotes", votes,
+                    "interactionAttempts.$userId", newAttempts,
+                    "firstInteractionTime.$userId", newFirstTime,
+                    "lastInteractionTime.$userId", now
+                )
+            }
         }
 
-        if (attempts >= 3) {
-            Toast.makeText(mContext, "Maximum 3 attempts reached. Vote is final.", Toast.LENGTH_SHORT).show()
-        } else if (!canInteractionNow) {
-            val remaining = 5 * 60 * 60 * 1000L - (now - lastTime)
-            val hours = remaining / (1000 * 60 * 60)
-            val minutes = (remaining / (1000 * 60)) % 60
-            Toast.makeText(mContext, "Vote locked for ${hours}h ${minutes}m", Toast.LENGTH_SHORT).show()
-        } else {
-            val votes = m.pollVotes.toMutableMap()
-            val key = index.toString()
+        val onRSVP: (UniversalMessage, String) -> Unit = { m, status ->
+            val attempts = (m.interactionAttempts[userId] ?: 0)
+            val firstTime = m.firstInteractionTime[userId] ?: m.lastInteractionTime[userId] ?: 0L
+            val now = System.currentTimeMillis()
             
-            // Interaction attempts tracking
-            val newAttempts = attempts + 1
-            val newTimes = m.lastInteractionTime.toMutableMap()
-            newTimes[userId] = now
-            
-            if (m.allowMultipleAnswers) {
-                val list = (votes[key] ?: emptyList()).toMutableList()
-                if (list.contains(userId)) list.remove(userId) else list.add(userId)
-                votes[key] = list
+            val isTimeLocked = firstTime > 0L && (now - firstTime >= 30 * 60 * 1000L)
+
+            if (attempts >= 5) {
+                Toast.makeText(mContext, "Maximum 5 attempts reached. RSVP is final.", Toast.LENGTH_SHORT).show()
+            } else if (isTimeLocked) {
+                Toast.makeText(mContext, "RSVP locked (30 min time limit reached)", Toast.LENGTH_SHORT).show()
             } else {
-                votes.keys.forEach { k ->
-                    val l = (votes[k] ?: emptyList()).toMutableList()
+                val rsvps = m.eventRSVPs.toMutableMap()
+                val newAttempts = attempts + 1
+                val newFirstTime = if (firstTime == 0L) now else firstTime
+                
+                listOf("going", "maybe", "not_going").forEach { s ->
+                    val l = (rsvps[s] ?: emptyList()).toMutableList()
                     if (l.contains(userId)) {
                         l.remove(userId)
-                        votes[k] = l
+                        rsvps[s] = l
                     }
                 }
-                val newList = (votes[key] ?: emptyList()).toMutableList()
-                newList.add(userId)
-                votes[key] = newList
+                val list = (rsvps[status] ?: emptyList()).toMutableList()
+                if (!list.contains(userId)) list.add(userId)
+                rsvps[status] = list
+                
+                db.collection("chats").document(chatId).collection("messages").document(m.id).update(
+                    "eventRSVPs", rsvps,
+                    "interactionAttempts.$userId", newAttempts,
+                    "firstInteractionTime.$userId", newFirstTime,
+                    "lastInteractionTime.$userId", now
+                )
             }
-            
-            db.collection("chats").document(chatId).collection("messages").document(m.id).update(
-                "pollVotes", votes,
-                "interactionAttempts.$userId", newAttempts,
-                "lastInteractionTime.$userId", now
-            )
-        }
-    }
-
-    val onRSVP: (UniversalMessage, String) -> Unit = { m, status ->
-        val attempts = (m.interactionAttempts[userId] ?: 0)
-        val lastTime = m.lastInteractionTime[userId] ?: 0L
-        val now = System.currentTimeMillis()
-        
-        val canInteractionNow = when {
-            attempts < 2 -> true
-            attempts == 2 -> (now - lastTime) >= 5 * 60 * 60 * 1000L
-            else -> false
+            showRsvpFor = null
         }
 
-        if (attempts >= 3) {
-            Toast.makeText(mContext, "Maximum 3 attempts reached. RSVP is final.", Toast.LENGTH_SHORT).show()
-        } else if (!canInteractionNow) {
-            val remaining = 5 * 60 * 60 * 1000L - (now - lastTime)
-            val hours = remaining / (1000 * 60 * 60)
-            val minutes = (remaining / (1000 * 60)) % 60
-            Toast.makeText(mContext, "RSVP locked for ${hours}h ${minutes}m", Toast.LENGTH_SHORT).show()
-        } else {
-            val rsvps = m.eventRSVPs.toMutableMap()
-            val newAttempts = attempts + 1
-            
-            listOf("going", "maybe", "not_going").forEach { s ->
-                val l = (rsvps[s] ?: emptyList()).toMutableList()
-                if (l.contains(userId)) {
-                    l.remove(userId)
-                    rsvps[s] = l
-                }
-            }
-            val list = (rsvps[status] ?: emptyList()).toMutableList()
-            if (!list.contains(userId)) list.add(userId)
-            rsvps[status] = list
-            
-            db.collection("chats").document(chatId).collection("messages").document(m.id).update(
-                "eventRSVPs", rsvps,
-                "interactionAttempts.$userId", newAttempts,
-                "lastInteractionTime.$userId", now
-            )
-        }
-        showRsvpFor = null
-    }
 
     var userClearedAt by remember { mutableLongStateOf(0L) }
     var userDeletedAt by remember { mutableLongStateOf(0L) }
@@ -1734,6 +1843,191 @@ private fun SmartChatDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDocument = null }) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) }
+            },
+            containerColor = ShynaDesign.colors.SurfaceBg
+        )
+    }
+
+    if (pendingContactInfo != null) {
+        val info = pendingContactInfo!!
+        val name = info["name"] as String
+        val photo = info["photo"] as String
+        @Suppress("UNCHECKED_CAST")
+        val numbers = info["numbers"] as List<Pair<String, String>>
+        val selectedNumbers = remember { mutableStateListOf<String>().apply { addAll(numbers.map { it.first }) } }
+
+        AlertDialog(
+            onDismissRequest = { pendingContactInfo = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Person, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(32.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Send Contact", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary)
+                }
+            },
+            text = {
+                Column {
+                    Text("Select number(s) to send for $name:", color = ShynaDesign.colors.TextSecondary, fontSize = 13.sp)
+                    Spacer(Modifier.height(12.dp))
+                    numbers.forEach { (num, label) ->
+                        val isChecked = selectedNumbers.contains(num)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (isChecked) {
+                                        if (selectedNumbers.size > 1) selectedNumbers.remove(num)
+                                    } else {
+                                        selectedNumbers.add(num)
+                                    }
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = isChecked,
+                                onCheckedChange = { checked ->
+                                    if (checked) selectedNumbers.add(num)
+                                    else if (selectedNumbers.size > 1) selectedNumbers.remove(num)
+                                },
+                                colors = CheckboxDefaults.colors(checkedColor = ShynaDesign.colors.BrandGreen)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(num, color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                                Text(label, color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingContactInfo = null
+                        val joinedPhones = selectedNumbers.joinToString(",")
+                        val metadata = "$name|$joinedPhones|$photo"
+                        val msg = mapOf(
+                            "text" to "👤 $name", 
+                            "senderId" to userId, 
+                            "timestamp" to Timestamp.now(), 
+                            "sentAt" to System.currentTimeMillis(),
+                            "type" to MessageType.CONTACT.name, 
+                            "metadata" to metadata,
+                            "status" to MessageStatus.SENT.name
+                        )
+                        db.collection("chats").document(chatId).collection("messages").add(msg)
+                        db.collection("chats").document(chatId).set(mapOf(
+                            "lastMessage" to "👤 $name", 
+                            "timestamp" to Timestamp.now(),
+                            "lastStatus" to MessageStatus.SENT.name,
+                            "lastSenderId" to userId
+                        ), SetOptions.merge())
+                    },
+                    enabled = selectedNumbers.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen)
+                ) {
+                    Text("SEND CONTACT (${selectedNumbers.size})")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingContactInfo = null }) { Text("Cancel", color = ShynaDesign.colors.BrandGreen) }
+            },
+            containerColor = ShynaDesign.colors.SurfaceBg
+        )
+    }
+
+    if (showContactDetailsFor != null) {
+        val m = showContactDetailsFor!!
+        val parts = m.metadata?.split("|") ?: listOf("Contact", "")
+        val name = parts.getOrNull(0) ?: "Contact"
+        val rawPhones = parts.getOrNull(1) ?: ""
+        val photoUri = parts.getOrNull(2)
+        val phoneList = remember(rawPhones) { rawPhones.split(",").filter { it.isNotBlank() } }
+
+        AlertDialog(
+            onDismissRequest = { showContactDetailsFor = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, modifier = Modifier.size(48.dp), color = ShynaDesign.colors.BrandGreen.copy(alpha = 0.2f)) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (!photoUri.isNullOrBlank()) {
+                                AsyncImage(model = photoUri, contentDescription = null, modifier = Modifier.fillMaxSize().clip(CircleShape), contentScale = ContentScale.Crop)
+                            } else {
+                                Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 20.sp)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text(name, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, fontSize = 18.sp)
+                        Text("Contact Details", fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary)
+                    }
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    phoneList.forEach { phone ->
+                        Surface(
+                            color = ShynaDesign.colors.HeaderBg,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(phone, color = ShynaDesign.colors.TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                    Text("Mobile", color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
+                                }
+                                Row {
+                                    IconButton(onClick = {
+                                        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+                                        runCatching { mContext.startActivity(intent) }
+                                    }) {
+                                        Icon(Icons.Default.Call, "Call", tint = ShynaDesign.colors.BrandGreen)
+                                    }
+                                    IconButton(onClick = {
+                                        val intent = Intent(Intent.ACTION_INSERT).apply {
+                                            type = ContactsContract.Contacts.CONTENT_TYPE
+                                            putExtra(ContactsContract.Intents.Insert.NAME, name)
+                                            putExtra(ContactsContract.Intents.Insert.PHONE, phone)
+                                        }
+                                        runCatching { mContext.startActivity(intent) }
+                                    }) {
+                                        Icon(Icons.Default.PersonAdd, "Save", tint = ShynaDesign.colors.BrandGreen)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val primaryPhone = phoneList.firstOrNull() ?: ""
+                        val intent = Intent(Intent.ACTION_INSERT).apply {
+                            type = ContactsContract.Contacts.CONTENT_TYPE
+                            putExtra(ContactsContract.Intents.Insert.NAME, name)
+                            putExtra(ContactsContract.Intents.Insert.PHONE, primaryPhone)
+                        }
+                        runCatching { mContext.startActivity(intent) }
+                        showContactDetailsFor = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ShynaDesign.colors.BrandGreen)
+                ) {
+                    Icon(Icons.Default.PersonAdd, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Save to Contacts")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showContactDetailsFor = null }) {
+                    Text("Close", color = ShynaDesign.colors.TextSecondary)
+                }
             },
             containerColor = ShynaDesign.colors.SurfaceBg
         )
@@ -1928,12 +2222,29 @@ private fun SmartChatDetailScreen(
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text("Clear this chat?", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
-            text = { Text("This will remove all messages from this chat.", color = ShynaDesign.colors.TextSecondary) },
+            text = { Text("This will remove all messages from this chat permanently.", color = ShynaDesign.colors.TextSecondary) },
             confirmButton = {
                 Button(
                     onClick = {
                         showClearConfirm = false
-                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("clearedAt" to Timestamp.now()), SetOptions.merge())
+                        val nowTs = Timestamp.now()
+                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("clearedAt" to nowTs), SetOptions.merge())
+                        
+                        db.collection("chats").document(chatId).collection("messages").get().addOnSuccessListener { snapshot ->
+                            val batch = db.batch()
+                            snapshot.documents.forEach { doc ->
+                                batch.delete(doc.reference)
+                            }
+                            batch.commit()
+                        }
+                        
+                        db.collection("chats").document(chatId).set(mapOf(
+                            "lastMessage" to "",
+                            "timestamp" to nowTs
+                        ), SetOptions.merge())
+                        
+                        msgs.clear()
+                        Toast.makeText(mContext, "Chat cleared", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
                 ) { Text("CLEAR CHAT", color = Color.White) }
@@ -1952,12 +2263,25 @@ private fun SmartChatDetailScreen(
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Delete this chat?", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
-            text = { Text("This will remove the chat from your list and all its messages.", color = ShynaDesign.colors.TextSecondary) },
+            text = { Text("This will delete all messages and remove the chat permanently.", color = ShynaDesign.colors.TextSecondary) },
             confirmButton = {
                 Button(
                     onClick = {
                         showDeleteConfirm = false
-                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("deletedAt" to Timestamp.now()), SetOptions.merge())
+                        val nowTs = Timestamp.now()
+                        db.collection("users").document(userId).collection("chatSettings").document(chatId).set(mapOf("deletedAt" to nowTs), SetOptions.merge())
+                        
+                        db.collection("chats").document(chatId).collection("messages").get().addOnSuccessListener { snapshot ->
+                            val batch = db.batch()
+                            snapshot.documents.forEach { doc ->
+                                batch.delete(doc.reference)
+                            }
+                            batch.delete(db.collection("chats").document(chatId))
+                            batch.commit()
+                        }
+                        
+                        msgs.clear()
+                        Toast.makeText(mContext, "Chat deleted", Toast.LENGTH_SHORT).show()
                         onBack()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
@@ -1986,8 +2310,8 @@ private fun SmartChatDetailScreen(
                 Toast.makeText(mContext, "Unable to send file: File is empty", Toast.LENGTH_SHORT).show()
                 return@let
             }
-            if (size > 50 * 1024 * 1024) { // 50MB Limit
-                Toast.makeText(mContext, "Unable to send file: Size exceeds 50MB", Toast.LENGTH_SHORT).show()
+            if (size > 500 * 1024 * 1024) { // 500MB Limit
+                Toast.makeText(mContext, "Unable to send file: Size exceeds 500MB", Toast.LENGTH_SHORT).show()
                 return@let
             }
 
@@ -2002,31 +2326,52 @@ private fun SmartChatDetailScreen(
     val contactLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
         uri?.let { contactUri ->
             var name = ""
-            var phone = ""
-            mContext.contentResolver.query(contactUri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    name = cursor.getString(cursor.getColumnIndexOrThrow(android.provider.ContactsContract.Contacts.DISPLAY_NAME))
-                    val contactId = cursor.getString(cursor.getColumnIndexOrThrow(android.provider.ContactsContract.Contacts._ID))
-                    val hasPhone = cursor.getString(cursor.getColumnIndexOrThrow(android.provider.ContactsContract.Contacts.HAS_PHONE_NUMBER))
-                    if (hasPhone == "1") {
-                        mContext.contentResolver.query(
-                            android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                            null,
-                            android.provider.ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = " + contactId,
-                            null, null
-                        )?.use { pCursor ->
-                            if (pCursor.moveToFirst()) {
-                                phone = pCursor.getString(pCursor.getColumnIndexOrThrow(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER))
+            var photoUriStr = ""
+            val numberList = mutableListOf<Pair<String, String>>()
+            
+            runCatching {
+                mContext.contentResolver.query(contactUri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(android.provider.ContactsContract.Contacts.DISPLAY_NAME)
+                        if (nameIdx != -1) name = cursor.getString(nameIdx) ?: "Contact"
+                        
+                        val contactIdIdx = cursor.getColumnIndex(android.provider.ContactsContract.Contacts._ID)
+                        val contactId = if (contactIdIdx != -1) cursor.getString(contactIdIdx) else ""
+                        
+                        val photoIdx = cursor.getColumnIndex(android.provider.ContactsContract.Contacts.PHOTO_THUMBNAIL_URI)
+                        if (photoIdx != -1) photoUriStr = cursor.getString(photoIdx) ?: ""
+                        
+                        if (contactId.isNotBlank()) {
+                            mContext.contentResolver.query(
+                                android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                                null,
+                                android.provider.ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?",
+                                arrayOf(contactId),
+                                null
+                            )?.use { pCursor ->
+                                val numIdx = pCursor.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                                val typeIdx = pCursor.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.TYPE)
+                                while (pCursor.moveToNext()) {
+                                    val num = if (numIdx != -1) pCursor.getString(numIdx) else ""
+                                    val typeVal = if (typeIdx != -1) pCursor.getInt(typeIdx) else android.provider.ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                                    val label = android.provider.ContactsContract.CommonDataKinds.Phone.getTypeLabel(mContext.resources, typeVal, "Mobile").toString()
+                                    if (num.isNotBlank() && numberList.none { it.first == num }) {
+                                        numberList.add(num to label)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            if (name.isNotEmpty()) {
-                val metadata = "$name|$phone"
-                val msg = mapOf("text" to "👤 $name", "senderId" to userId, "timestamp" to Timestamp.now(), "type" to MessageType.CONTACT.name, "metadata" to metadata)
-                db.collection("chats").document(chatId).collection("messages").add(msg)
-                db.collection("chats").document(chatId).set(mapOf("lastMessage" to "👤 $name", "timestamp" to Timestamp.now()), SetOptions.merge())
+            if (name.isNotEmpty() && numberList.isNotEmpty()) {
+                pendingContactInfo = mapOf(
+                    "name" to name,
+                    "photo" to photoUriStr,
+                    "numbers" to numberList
+                )
+            } else {
+                Toast.makeText(mContext, "No phone numbers found for this contact", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -2154,6 +2499,21 @@ private fun SmartChatDetailScreen(
                         pollOptions = d.get("pollOptions") as? List<String> ?: emptyList(),
                         pollVotes = d.get("pollVotes") as? Map<String, List<String>> ?: emptyMap(),
                         allowMultipleAnswers = d.getBoolean("allowMultipleAnswers") ?: false,
+                        interactionAttempts = (d.get("interactionAttempts") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                            val key = k?.toString() ?: return@mapNotNull null
+                            val value = (v as? Number)?.toInt() ?: 0
+                            key to value
+                        }?.toMap() ?: emptyMap(),
+                        firstInteractionTime = (d.get("firstInteractionTime") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                            val key = k?.toString() ?: return@mapNotNull null
+                            val value = (v as? Number)?.toLong() ?: 0L
+                            key to value
+                        }?.toMap() ?: emptyMap(),
+                        lastInteractionTime = (d.get("lastInteractionTime") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                            val key = k?.toString() ?: return@mapNotNull null
+                            val value = (v as? Number)?.toLong() ?: 0L
+                            key to value
+                        }?.toMap() ?: emptyMap(),
                         // Event
                         eventTitle = d.getString("eventTitle"),
                         eventDescription = d.getString("eventDescription"),
@@ -2258,7 +2618,9 @@ private fun SmartChatDetailScreen(
             onBack = { showMediaScoped = false },
             onMediaClick = { fullScreenMedia = it }
         )
-    } else if (showNewGroupScoped && peer != null) {
+    }
+
+    if (showNewGroupScoped && peer != null) {
         NewGroupScopedScreen(
             peer = peer,
             allUsers = allUsers,
@@ -2359,29 +2721,7 @@ private fun SmartChatDetailScreen(
                             
                             if (isInteractable) {
                                 IconButton(onClick = { 
-                                    val m = firstSelMsg
-                                    if (m.messageType == MessageType.LOCATION || m.messageType == MessageType.LIVE_LOCATION) {
-                                        val loc = m.metadata ?: "0,0"
-                                        val data = if (m.messageType == MessageType.LIVE_LOCATION) loc.substringBefore("|") else loc
-                                        val parts = data.split(",")
-                                        val lat = parts.getOrNull(0)?.toDoubleOrNull() ?: 0.0
-                                        val lon = parts.getOrNull(1)?.toDoubleOrNull() ?: 0.0
-                                        val gmmIntentUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon")
-                                        val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri)
-                                        mapIntent.setPackage("com.google.android.apps.maps")
-                                        mContext.startActivity(mapIntent)
-                                    } else if (m.messageType == MessageType.DOC) {
-                                        DocInteraction.downloadAndOpen(mContext, scope, m)
-                                    } else if (m.messageType == MessageType.LINK) {
-                                        try {
-                                            val url = if (!m.text.startsWith("http")) "https://${m.text}" else m.text
-                                            mContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                                        } catch (e: Exception) {
-                                            Toast.makeText(mContext, "Cannot open link", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } else {
-                                        fullScreenMedia = m
-                                    }
+                                    openMessageItem(mContext, scope, firstSelMsg) { fullScreenMedia = it }
                                     selectedMsgs.clear()
                                 }) { Icon(Icons.Outlined.Visibility, null, tint = ShynaDesign.colors.TextPrimary) }
                             }
@@ -2668,7 +3008,6 @@ private fun SmartChatDetailScreen(
             Box(Modifier.weight(1f).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
                 showEmojis = false
                 showAttachments = false
-                selectedMsgs.clear()
             }) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(), 
@@ -2718,8 +3057,12 @@ private fun SmartChatDetailScreen(
                                     }
                                 },
                                 onClick = {
-                                    if (selectedMsgs.contains(m.id)) selectedMsgs.remove(m.id)
-                                    else selectedMsgs.add(m.id)
+                                    if (selectedMsgs.isNotEmpty()) {
+                                        if (selectedMsgs.contains(m.id)) selectedMsgs.remove(m.id)
+                                        else selectedMsgs.add(m.id)
+                                    } else {
+                                        openMessageItem(mContext, scope, m, onMediaClick = { fullScreenMedia = it }, onOpenContact = { showContactDetailsFor = it })
+                                    }
                                 },
                                 onMediaClick = { fullScreenMedia = it },
                                 onPollVote = { index -> onVote(m, index) },
@@ -3315,15 +3658,73 @@ private fun InfoRow(icon: ImageVector, label: String, time: Long, iconColor: Col
 
 @Composable
 private fun EmojiPicker(onEmojiSelected: (String) -> Unit) {
-    val emojis = remember { listOf("😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😮", "😯", "😲", "😳", "🥺", "😦", "😧", "😧", "😨", "😰", "😥", "😢", "😭", "😱", "😖", "😣", "😞", "😓", "😩", "😫", "🥱", "😤", "😡", "😠", "🤬", "😈", "👿", "💀", "☠️", "💩", "🤡", "👹", "👺", "👻", "👽", "👾", "🤖") }
-    Surface(Modifier.fillMaxWidth().height(250.dp), color = ShynaDesign.colors.HeaderBg) {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(45.dp), 
-            contentPadding = PaddingValues(8.dp),
-            state = rememberLazyGridState()
+    var selectedCategoryIndex by remember { mutableIntStateOf(0) }
+    
+    val categories = remember {
+        listOf(
+            "😀" to listOf(
+                "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😮", "😯", "😲", "😳", "🥺", "😦", "😧", "😨", "😰", "😥", "😢", "😭", "😱", "😖", "😣", "😓", "😩", "😫", "🥱", "😤", "😡", "😠", "🤬", "😈", "👿", "💀", "☠️", "💩", "🤡", "👹", "👺", "👻", "👽", "👾", "🤖", "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿", "😾"
+            ),
+            "👍" to listOf(
+                "👋", "🤚", "🖐️", "✋", "🖖", "👌", "🤌", "🤏", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕", "👇", "☝️", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✍️", "💅", "🤳", "💪", "🦾", "🦿", "🦵", "🦶", "👂", "🦻", "👃", "🧠", "🫀", "🫁", "🦷", "🦴", "👀", "👁️", "舌", "👄"
+            ),
+            "🐶" to listOf(
+                "🐶", "🐱", "🐭", "🐹", "🐰", "🦊", "🐻", "🐼", "🐻‍❄️", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🙈", "🙉", "🙊", "🐒", "🐔", "🐧", "🐦", "🐤", "🐣", "🐥", "🦆", "🦅", "🦉", "🦇", "🐺", "🐗", "🐴", "🦄", "🐝", "🪱", "🐛", "🦋", "🐌", "🐞", "🐜", "🪰", "🪲", "🪳", "🦟", "🦗", "🕷️", "🕸️", "🦂", "🐢", "🐍", "🦎", "🦖", "🦕", "🐙", "🦑", "🦐", "🦞", "🦀", "🐡", "🐠", "🐟", "🐬", "🐳", "🐋", "🦈", "🦭", "🐊", "🐅", "🐆", "zebra", "🦍", "🦧", "🦣", "🐘", "🦛", "🦏", "🐪", "🐫", "🦒", "🦘", "🦬", "🐃", "🐂", "🐎", "🐖", "🐏", "🐑", "🦙", "🐐", "🦌", "🐕", "🐩", "🦮", "🐕‍🦺", "🐈", "🐈‍⬛", "🐓", "🦃", "🦚", "🦜", "🦩", "🕊️", "🐇", "🦝", "🦨", "🦡", "🦫", "🦦", "🦥", "🐁", "🐀", "🐿️", "🦔"
+            ),
+            "🍎" to listOf(
+                "🍏", "🍎", "🍐", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🫐", "🍈", "🍒", "🍑", "🥭", "🍍", "🥥", "🥝", "🍅", "🍆", "🥑", "🥦", "🥬", "🥒", "🌶️", "🫑", "🌽", "🥕", "🫒", "🧄", "🧅", "🥔", "🍠", "🥐", "🥯", "🍞", "🥖", "🥨", "🧀", "🥚", "🍳", "🧈", "🥞", "🧇", "🥓", "🥩", "🍗", "🍖", "🦴", "🌭", "🍔", "🍟", "🍕", "🫓", "🥪", "🥙", "🧆", "🌮", "🌯", "🫔", "🥗", "🥘", "🫕", "🥫", "🍝", "🍜", "🍲", "🍛", "🍣", "🍱", "🥟", "🦪", "🍤", "🍙", "🍚", "🍘", "🍥", "🥠", "🥮", "🍢", "🍡", "🍧", "🍨", "🍦", "🥧", "🧁", "🍰", "🎂", "🍮", "🍭", "🍬", "🍫", "🍿", "🍩", "🍪", "🌰", "🥜", "🍯", "🥛", "🍼", "🫖", "☕", "🍵", "🧃", "🥤", "🧋", "🍶", "🍺", "🍻", "🥂", "🍷", "🥃", "🍸", "🍹", "🍾", "🧊"
+            ),
+            "⚽" to listOf(
+                "⚽", "🏀", "🏈", "⚾", "🥎", "tennis", "🏐", "🏉", "🥏", "🎱", "🪀", "🏓", "🏸", "🏒", "🏑", "🥍", "🏏", "🪃", "🥅", "⛳", "🪁", "🏹", "🎣", "🤿", "🥊", "🥋", "🎽", "🛹", "🛼", "🛷", "⛸️", "🥌", "🎿", "⛷️", "🏂", "🪂", "🏋️", "🤼", "🤸", "⛹️", "🤺", "🤾", "🏌️", "🏇", "🧘", "🏄", "🏊", "🤽", "🚣", "🧗", "🚵", "🚴", "🏆", "🥇", "🥈", "🥉", "🏅", "🎖️", "🏵️", "🎗️", "🎫", "🎟️", "🎪", "🤹", "🎭", "🩰", "🎨", "🎬", "🎤", "🎧", "🎼", "🎵", "🎶", "🥁", "🎷", "🎺", "🎸", "🪕", "🎻", "🎲", "🎯", " bowling", "🎮", "🎰", "🧩"
+            ),
+            "✈️" to listOf(
+                "🚗", "🚕", "🚙", "🚌", "🛺", "🏎️", "🚓", "🚑", "🚒", "🚐", "🛻", "🚚", "🚛", "🚜", "🦯", "🦽", "🦼", "🛴", "🚲", "🛵", "🏍️", "🛞", "🚨", "🚔", "🚍", "🚘", "🚖", "🚡", "🚠", "🚟", "🚃", "🚋", "🚝", "🚄", "🚅", "🚈", "🚂", "🚆", "🚇", "🚊", "🚉", "✈️", "🛫", "🛬", "🛩️", "💺", "🛰️", "🚀", "🛸", "🚁", "🛶", "⛵", "🚤", "🛥️", "🛳️", "⛴️", "🚢", "⚓", "🛟", "⛽", "🚧", "🚦", "🚥", "🛑", "🎡", "🎢", "🎠", "🏗️", "🧳", "⌛", "⏳", "⌚", "⏰", "⏱️", "⏲️", "🕰️", "🌡️", "☀️", "🌝", "🌞", "🪐", "⭐", "🌟", "🌠", "🌌", "☁️", "⛅", "⛈️", "🌤️", "🌦️", "🌧️", "🌩️", "🌪️", "🌫️", "🌬️", "🌀", "🌈", "🌂", "☂️", "☔", "⚡", "❄️", "☃️", "⛄", "🔥", "💧", "🌊"
+            ),
+            "💡" to listOf(
+                "👓", "🕶️", "🥽", "🥼", "🦺", "👔", "👕", "👖", "🧣", "Gloves", "🧥", "🧦", "👗", "👘", "🥻", "🩱", "👙", "🩲", "🩳", "💄", "💋", "👣", "🦔", "👞", "👟", "🥾", "🥿", "👠", "🩰", "👡", "👢", "👑", "👒", "🎩", "🎓", "🧢", "🪖", "🎒", "👝", "👛", "👜", "💼", "🧳", "☂️", "💍", "💎", "🔇", "🔈", "🔉", "🔊", "📢", "📣", "📯", "🔔", "🔕", "🎼", "🎵", "🎶", "🎙️", "🎚️", "🎛️", "🎤", "🎧", "📻", "🎷", "🪗", "🎸", "🎹", "🎺", "🎻", "🪕", "🥁", "🪘", "📱", "📲", "☎️", "📞", "📟", "📠", "🔋", "🔌", "💻", "🖥️", "🖨️", "⌨️", "🖱️", "🖲️", "💽", "💾", "💿", "DVD", "🧮", "🎥", "🎞️", "📽️", "🎬", "📺", "📷", "📸", "📹", "📼", "🔍", "🔎", "🕯️", "💡", "🔦", "🏮", "🪔", "📔", "📕", "📖", "📗", "📘", "📙", "📚", "📓", "📒", "📃", "📜", "📄", "📰", "🗞️", "📑", "🔖", "🏷️", "💰", "🪙", "💴", "💵", "💶", "💷", "💸", "💳", "🧾", "✉️", "📧", "📨", "📩", "📤", "📥", "📦", "📫", "📪", "📬", "📭", "📮", "🗳️", "✏️", "✒️", "🖋️", "🖊️", "🖌️", "🖍️", "📝", "💼", "📁", "📂", "🗂️", "📅", "📆", "🗓️", "📇", "📈", "📉", "📊", "📋", "📌", "📍", "📎", "🖇️", "📏", "📐", "✂️", "🗃️", "🗄️", "🗑️", "🔒", "🔓", "🔏", "🔐", "🔑", "🗝️", "🔨", "🪓", "⛏️", "⚒️", "🛠️", "🗡️", "⚔️", "💣", "🪃", "🏹", "🛡️", "🪚", "🔧", "🪛", "🔩", "⚙️", "🗜️", "⚖️", "🦯", "🔗", "⛓️", "🪝", "🧰", "🧲", "🪜", "🧪", "🧫", "🧬", "🔬", "🔭", "📡", "💉", "🩸", "💊", "🩹", "🩺", "🚪", "🛗", "🪞", "🪟", "🛏️", "🛋️", "🪑", "🚽", "🪠", "Shower", "🛁", "🪤", "🪒", "Lotion", "🧷", "🧹", "Basket", "🧻", "Bucket", "Soap", "Toothbrush", "Sponge", "🧯", "Cart", "Cigarette", "Coffin", "Placard"
+            ),
+            "❤️" to listOf(
+                "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "💟", "☮️", "✝️", "☪️", "🕉️", "☸️", "✡️", "🔯", "🕎", "☯️", "☦️", "🛐", "⛎", "♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓", "🔀", "🔁", "🔂", "▶️", "⏩", "⏭️", "⏯️", "◀️", "⏪", "⏮️", "🔼", "⏫", "🔽", "⏬", "⏸️", "⏹️", "⏺️", "⏏️", "🎦", "🔅", "🔆", "📶", "📳", "📴", "♀️", "♂️", "⚧️", "✖️", "➕", "➖", "➗", "♾️", "‼️", "⁉️", "❓", "❔", "❕", "❗", "〰️", "💱", "💲", "⚕️", "♻️", "⚜️", "🔱", "📛", "🔰", "⭕", "✅", "☑️", "✔️", "❌", "❎", "➰", "➿", "〽️", "✳️", "✴️", "❇️", "©️", "®️", "™️", "#️⃣", "*️⃣", "0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "🔠", "🔡", "🔢", "🔣", "🔤", "🅰️", "🆎", "🅱️", "🆑", "🆒", "🆓", "ℹ️", "🆔", "Ⓜ️", "🆕", "🆖", "🅾️", "🆗", "🅿️", "🆘", "🆙", "VS", "🈁", "🈂️", "🈷️", "🈶", "🈯", "🉐", "🈹", "🈚", "🈲", "🉑", "🈸", "🈴", "🈳", "㊗️", "㊙️", "🈺", "🈵", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫", "⚪", "🟤", "🔺", "🔻", "🔸", "🔹", "🔶", "🔷", "🔳", "🔲", "▪️", "▫️", "◾", "◽", "◼️", "◻️", "⬛", "⬜", "🔈", "🔇", "📢", "🔔", "🔕", "📣", "🏁", "🚩", "🎌", "🏴", "🏳️"
+            )
+        )
+    }
+
+    Column(Modifier.fillMaxWidth().height(280.dp).background(ShynaDesign.colors.HeaderBg)) {
+        ScrollableTabRow(
+            selectedTabIndex = selectedCategoryIndex,
+            edgePadding = 8.dp,
+            containerColor = ShynaDesign.colors.HeaderBg,
+            contentColor = ShynaDesign.colors.BrandGreen,
+            divider = {}
         ) {
-            items(emojis, key = { it }) { e -> 
-                Box(Modifier.size(45.dp).clickable { onEmojiSelected(e) }, contentAlignment = Alignment.Center) { Text(e, fontSize = 24.sp) }
+            categories.forEachIndexed { index, (tabIcon, _) ->
+                Tab(
+                    selected = selectedCategoryIndex == index,
+                    onClick = { selectedCategoryIndex = index },
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Text(tabIcon, fontSize = 20.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp))
+                }
+            }
+        }
+
+        val currentEmojis = categories[selectedCategoryIndex].second
+
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(42.dp),
+            contentPadding = PaddingValues(8.dp),
+            state = rememberLazyGridState(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(currentEmojis, key = { it }) { e ->
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clickable { onEmojiSelected(e) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(e, fontSize = 22.sp)
+                }
             }
         }
     }

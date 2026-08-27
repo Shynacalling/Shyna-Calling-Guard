@@ -78,6 +78,7 @@ data class UniversalMessage(
     val eventLocation: String? = null,
     val eventRSVPs: Map<String, List<String>> = emptyMap(), // status -> list of userIds
     val interactionAttempts: Map<String, Int> = emptyMap(), // userId -> count
+    val firstInteractionTime: Map<String, Long> = emptyMap(), // userId -> timestamp
     val lastInteractionTime: Map<String, Long> = emptyMap(), // userId -> timestamp
     // Call Data
     val callId: String? = null,

@@ -106,12 +106,7 @@ class InCallServiceImpl : InCallService() {
             }
         }
 
-        val isIncoming = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            call.details.callDirection == Call.Details.DIRECTION_INCOMING
-        } else {
-            // Fallback for API 26-28: If the call arrives in RINGING state, it is incoming.
-            call.state == Call.STATE_RINGING
-        }
+        val isIncoming = (call.state == Call.STATE_RINGING) || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && call.details.callDirection == Call.Details.DIRECTION_INCOMING)
         if (!isIncoming) {
             CallHolder.set(call)
             launchCallScreen()

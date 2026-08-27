@@ -181,23 +181,35 @@ private fun ZoomableImagePage(imageUrl: String, onToggleControls: () -> Unit) {
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { onToggleControls() },
-                    onDoubleTap = {
+                    onDoubleTap = { tapOffset ->
                         if (scale > 1f) {
                             scale = 1f
                             offset = Offset.Zero
                         } else {
                             scale = 3f
-                            // Zoom remains centered, offset stays Zero for "Centre-Lock"
-                            offset = Offset.Zero
+                            val maxX = (size.width * (3f - 1f)) / 2f
+                            val maxY = (size.height * (3f - 1f)) / 2f
+                            val newX = ((size.width / 2f) - tapOffset.x) * 2f
+                            val newY = ((size.height / 2f) - tapOffset.y) * 2f
+                            offset = Offset(newX.coerceIn(-maxX, maxX), newY.coerceIn(-maxY, maxY))
                         }
                     }
                 )
             }
             .pointerInput(Unit) {
-                detectTransformGestures { _, _, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 5f)
-                    // Pan is disabled by ignoring pan/centroid and keeping offset Zero
-                    offset = Offset.Zero
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    if (newScale > 1f) {
+                        val maxX = (size.width * (newScale - 1f)) / 2f
+                        val maxY = (size.height * (newScale - 1f)) / 2f
+                        val newX = (offset.x + pan.x * newScale).coerceIn(-maxX, maxX)
+                        val newY = (offset.y + pan.y * newScale).coerceIn(-maxY, maxY)
+                        scale = newScale
+                        offset = Offset(newX, newY)
+                    } else {
+                        scale = 1f
+                        offset = Offset.Zero
+                    }
                 }
             },
         contentAlignment = Alignment.Center

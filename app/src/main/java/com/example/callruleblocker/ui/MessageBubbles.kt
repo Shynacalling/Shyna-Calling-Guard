@@ -239,83 +239,114 @@ fun DocMessageBubble(m: UniversalMessage) {
         File(mContext.cacheDir, "${m.id}_$sanitizedName").exists()
     }
 
+    val badgeColor = when (ext) {
+        "pdf" -> Color(0xFFE53935) // Red
+        in listOf("doc", "docx") -> Color(0xFF1E88E5) // Blue
+        in listOf("xls", "xlsx") -> Color(0xFF43A047) // Green
+        in listOf("ppt", "pptx") -> Color(0xFFFB8C00) // Orange
+        "apk" -> Color(0xFF00897B) // Teal
+        in listOf("zip", "rar", "7z") -> Color(0xFF8E24AA) // Purple
+        else -> ShynaDesign.colors.BrandGreen
+    }
+
+    val badgeIcon = when (ext) {
+        "pdf" -> Icons.Default.PictureAsPdf
+        in listOf("doc", "docx") -> Icons.Default.Description
+        in listOf("xls", "xlsx") -> Icons.Default.TableChart
+        "apk" -> Icons.Default.Android
+        in listOf("zip", "rar", "7z") -> Icons.Default.FolderZip
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+    }
+
     Column(
         modifier = Modifier
-            .width(250.dp)
+            .width(260.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(ShynaDesign.colors.SurfaceBg.copy(alpha = 0.5f))
-            .padding(12.dp)
+            .background(ShynaDesign.colors.SurfaceBg)
+            .padding(10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            val icon = when {
-                ext == "pdf" -> Icons.Default.PictureAsPdf
-                ext in listOf("doc", "docx") -> Icons.Default.Description
-                ext in listOf("xls", "xlsx") -> Icons.Default.TableChart
-                ext == "apk" -> Icons.Default.Android
-                else -> Icons.AutoMirrored.Filled.InsertDriveFile
-            }
             Box(
                 modifier = Modifier
-                    .size(42.dp)
+                    .size(46.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(ShynaDesign.colors.BrandGreen.copy(0.1f)),
+                    .background(badgeColor.copy(alpha = 0.18f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(24.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(badgeIcon, null, tint = badgeColor, modifier = Modifier.size(24.dp))
+                    if (ext.isNotBlank() && ext.length <= 4) {
+                        Text(ext.uppercase(), fontSize = 9.sp, fontWeight = FontWeight.Bold, color = badgeColor)
+                    }
+                }
             }
             
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             
             Column(Modifier.weight(1f)) {
                 Text(m.fileName ?: "Document", color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 val info = remember(m.fileSize, m.fileName) {
                     val size = formatFileSize(m.fileSize)
-                    "$ext • $size".uppercase()
+                    if (ext.isNotBlank()) "$ext • $size".uppercase() else size
                 }
                 Text(info, color = ShynaDesign.colors.TextSecondary, fontSize = 11.sp)
             }
             
             if (isDownloading) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), color = ShynaDesign.colors.BrandGreen, strokeWidth = 2.dp)
-            } else if (!fileExists) {
-                Icon(Icons.Default.Download, null, tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(20.dp))
+            } else if (fileExists) {
+                Icon(Icons.Default.CheckCircle, "Downloaded", tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(22.dp))
+            } else {
+                Icon(Icons.Default.Download, "Download", tint = ShynaDesign.colors.TextSecondary, modifier = Modifier.size(22.dp))
             }
         }
     }
 }
 
 @Composable
-fun ContactMessageBubble(m: UniversalMessage) {
+fun ContactMessageBubble(m: UniversalMessage, onOpenContact: (UniversalMessage) -> Unit = {}) {
     val parts = m.metadata?.split("|") ?: listOf("Contact", "")
     val name = parts.getOrNull(0) ?: "Contact"
-    val phone = parts.getOrNull(1) ?: ""
+    val rawPhones = parts.getOrNull(1) ?: ""
+    val photoUri = parts.getOrNull(2)
+    val phoneList = remember(rawPhones) { rawPhones.split(",").filter { it.isNotBlank() } }
+    val displayPhone = if (phoneList.size > 1) "${phoneList.size} Phone Numbers" else phoneList.firstOrNull() ?: ""
 
     Column(
         modifier = Modifier
-            .width(230.dp)
+            .width(240.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(ShynaDesign.colors.SurfaceBg)
+            .clickable { onOpenContact(m) }
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, modifier = Modifier.size(40.dp), color = ShynaDesign.colors.BrandGreen.copy(alpha = 0.1f)) {
+            Surface(shape = CircleShape, modifier = Modifier.size(44.dp), color = ShynaDesign.colors.BrandGreen.copy(alpha = 0.15f)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen)
+                    if (!photoUri.isNullOrBlank()) {
+                        AsyncImage(model = photoUri, contentDescription = null, modifier = Modifier.fillMaxSize().clip(CircleShape), contentScale = ContentScale.Crop)
+                    } else {
+                        Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold, color = ShynaDesign.colors.BrandGreen, fontSize = 18.sp)
+                    }
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Column {
-                Text(name, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(phone, fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary)
+            Column(Modifier.weight(1f)) {
+                Text(name, fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+                Text(displayPhone, fontSize = 12.sp, color = ShynaDesign.colors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = ShynaDesign.colors.DividerColor)
-        TextButton(
-            onClick = { /* Add to contacts or message */ },
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            Text("Message", color = ShynaDesign.colors.BrandGreen, fontWeight = FontWeight.Bold)
+            TextButton(onClick = { onOpenContact(m) }) {
+                Icon(Icons.Default.Person, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("View Contact", color = ShynaDesign.colors.BrandGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            }
         }
     }
 }
@@ -336,25 +367,30 @@ fun PollMessageBubble(m: UniversalMessage, userId: String, isSelectionMode: Bool
 
         val totalVotes = m.pollVotes.values.sumOf { it.size }.coerceAtLeast(1)
         val attempts = m.interactionAttempts[userId] ?: 0
-        val lastTime = m.lastInteractionTime[userId] ?: 0L
+        val firstTime = m.firstInteractionTime[userId] ?: m.lastInteractionTime[userId] ?: 0L
         val now = System.currentTimeMillis()
         
-        val canInteract = when {
-            attempts < 2 -> true
-            attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
-            else -> false
+        val isTimeLocked = firstTime > 0L && (now - firstTime >= 30 * 60 * 1000L)
+        val canInteract = attempts < 5 && !isTimeLocked
+
+        val statusText = when {
+            attempts >= 5 -> "Responses closed (5/5 attempts used)"
+            isTimeLocked -> "Voting locked (30 min time limit reached)"
+            attempts == 0 -> "5 chances left"
+            attempts == 1 -> "4 chances left"
+            attempts == 2 -> "3 chances left"
+            attempts == 3 -> "2 chances left"
+            attempts == 4 -> "1 chance left (Final chance)"
+            else -> "Responses closed"
         }
-        
-        if (attempts >= 3) {
-            Text("Voted (3/3) - Responses closed", color = ShynaDesign.colors.BrandGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-        } else if (attempts == 2 && !canInteract) {
-            val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
-            val hours = remaining / (1000 * 60 * 60)
-            val minutes = (remaining / (1000 * 60)) % 60
-            Text("Final attempt locked for ${hours}h ${minutes}m", color = Color.Red, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-        } else if (attempts > 0) {
-            Text("Attempt $attempts/3 used", color = ShynaDesign.colors.TextSecondary, fontSize = 10.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+        val statusColor = when {
+            attempts >= 5 || isTimeLocked -> Color.Red
+            attempts == 4 -> Color(0xFFFF9800)
+            else -> ShynaDesign.colors.BrandGreen
         }
+
+        Text(statusText, color = statusColor, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
 
         m.pollOptions.forEachIndexed { index, option ->
             val voters = m.pollVotes[index.toString()] ?: emptyList()
@@ -397,24 +433,27 @@ fun EventMessageBubble(m: UniversalMessage, userId: String, isSelectionMode: Boo
         else -> null
     }
     val attempts = m.interactionAttempts[userId] ?: 0
-    val lastTime = m.lastInteractionTime[userId] ?: 0L
+    val firstTime = m.firstInteractionTime[userId] ?: m.lastInteractionTime[userId] ?: 0L
     val now = System.currentTimeMillis()
     
-    val canInteract = when {
-        attempts < 2 -> true
-        attempts == 2 -> (now - lastTime) >= 4 * 60 * 60 * 1000L
-        else -> false
+    val isTimeLocked = firstTime > 0L && (now - firstTime >= 30 * 60 * 1000L)
+    val canInteract = attempts < 5 && !isTimeLocked
+
+    val statusText = when {
+        attempts >= 5 -> "RSVP Finalized (5/5 attempts used)"
+        isTimeLocked -> "RSVP locked (30 min time limit reached)"
+        attempts == 0 -> "5 chances left"
+        attempts == 1 -> "4 chances left"
+        attempts == 2 -> "3 chances left"
+        attempts == 3 -> "2 chances left"
+        attempts == 4 -> "1 chance left (Final chance)"
+        else -> "RSVP Finalized"
     }
 
-    if (attempts >= 3) {
-        Text("RSVP Finalized (3/3)", color = ShynaDesign.colors.BrandGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-    } else if (attempts == 2 && !canInteract) {
-        val remaining = 4 * 60 * 60 * 1000L - (now - lastTime)
-        val hours = remaining / (1000 * 60 * 60)
-        val minutes = (remaining / (1000 * 60)) % 60
-        Text("Final change locked for ${hours}h ${minutes}m", color = Color.Red, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-    } else if (attempts > 0) {
-        Text("Attempt $attempts/3 used", color = Color.DarkGray, fontSize = 10.sp, modifier = Modifier.padding(bottom = 8.dp))
+    val statusColor = when {
+        attempts >= 5 || isTimeLocked -> Color.Red
+        attempts == 4 -> Color(0xFFFF9800)
+        else -> ShynaDesign.colors.BrandGreen
     }
 
     Column(
@@ -448,7 +487,10 @@ fun EventMessageBubble(m: UniversalMessage, userId: String, isSelectionMode: Boo
             }
         }
         
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(statusText, color = statusColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+
+        Spacer(Modifier.height(8.dp))
         HorizontalDivider(color = Color.Black.copy(alpha = 0.1f))
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
@@ -653,15 +695,31 @@ object DocInteraction {
 
 object FileOpener {
     fun open(context: Context, file: File, mimeType: String?) {
+        val ext = file.extension.lowercase(Locale.getDefault())
+        val resolvedMime = when {
+            !mimeType.isNullOrBlank() && mimeType != "*/*" -> mimeType
+            ext == "apk" -> "application/vnd.android.package-archive"
+            ext == "pdf" -> "application/pdf"
+            ext in listOf("doc", "docx") -> "application/msword"
+            ext in listOf("xls", "xlsx") -> "application/vnd.ms-excel"
+            ext in listOf("ppt", "pptx") -> "application/vnd.ms-powerpoint"
+            ext in listOf("png", "jpg", "jpeg", "webp", "gif") -> "image/*"
+            ext in listOf("mp4", "mkv", "3gp", "webm", "avi") -> "video/*"
+            ext in listOf("mp3", "m4a", "wav", "aac", "ogg") -> "audio/*"
+            ext in listOf("txt", "log", "csv") -> "text/plain"
+            ext in listOf("zip", "rar", "7z") -> "application/zip"
+            else -> "*/*"
+        }
         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mimeType ?: "*/*")
+            setDataAndType(uri, resolvedMime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         try {
             context.startActivity(intent)
         } catch (e: Exception) {
-            Toast.makeText(context, "No app found to open this file", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "No app found to open file", Toast.LENGTH_SHORT).show()
         }
     }
 }

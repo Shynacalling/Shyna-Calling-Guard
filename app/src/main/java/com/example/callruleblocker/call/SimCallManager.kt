@@ -40,28 +40,65 @@ object SimCallManager {
     fun placeCall(context: Context, number: String, simIndex: Int? = null) {
         val telecom = context.getSystemService(TelecomManager::class.java)
         val extras = Bundle()
-        if (simIndex != null) {
-            // Hot path: do not enumerate PhoneAccount metadata/labels again just before dialing.
-            // The UI already selected the SIM index; resolving only the handle avoids extra
-            // Telecom binder work before placeCall().
-            runCatching { telecom?.callCapablePhoneAccounts?.getOrNull(simIndex) }.getOrNull()?.let { handle ->
+
+        val targetIndex = if (simIndex != null) {
+            simIndex
+        } else {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val mode = prefs.getString(KEY_DEFAULT_SIM, MODE_ASK) ?: MODE_ASK
+            if (mode.startsWith(MODE_SIM_PREFIX)) {
+                mode.removePrefix(MODE_SIM_PREFIX).toIntOrNull()
+            } else {
+                null
+            }
+        }
+
+        if (targetIndex != null) {
+            // Hot path: resolve handle for target SIM
+            runCatching { telecom?.callCapablePhoneAccounts?.getOrNull(targetIndex) }.getOrNull()?.let { handle ->
                 extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
             }
         }
-        telecom?.placeCall(Uri.parse("tel:${Uri.encode(number)}"), extras)
+
+        val cleanNumber = number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+        runCatching {
+            telecom?.placeCall(Uri.parse("tel:$cleanNumber"), extras)
+        }.onFailure { e ->
+            android.widget.Toast.makeText(context, "Call failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
+
     @SuppressLint("MissingPermission")
     fun placeVideoCall(context: Context, number: String, simIndex: Int? = null) {
         val telecom = context.getSystemService(TelecomManager::class.java) ?: return
         val extras = Bundle().apply {
             putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, VideoProfile.STATE_BIDIRECTIONAL)
-            if (simIndex != null) {
-                getChoices(context).getOrNull(simIndex)?.let { choice ->
-                    putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, choice.handle)
-                }
+        }
+
+        val targetIndex = if (simIndex != null) {
+            simIndex
+        } else {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val mode = prefs.getString(KEY_DEFAULT_SIM, MODE_ASK) ?: MODE_ASK
+            if (mode.startsWith(MODE_SIM_PREFIX)) {
+                mode.removePrefix(MODE_SIM_PREFIX).toIntOrNull()
+            } else {
+                null
             }
         }
-        telecom.placeCall(Uri.parse("tel:${Uri.encode(number)}"), extras)
+
+        if (targetIndex != null) {
+            getChoices(context).getOrNull(targetIndex)?.let { choice ->
+                extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, choice.handle)
+            }
+        }
+
+        val cleanNumber = number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+        runCatching {
+            telecom.placeCall(Uri.parse("tel:$cleanNumber"), extras)
+        }.onFailure { e ->
+            android.widget.Toast.makeText(context, "Video call failed: ${e.localizedMessage}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
 }

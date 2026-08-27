@@ -486,21 +486,28 @@ fun SendLocationScreen(onBack: () -> Unit, onSendLocation: (String) -> Unit) {
                                 }
                                 
                                 item {
-                                    val isReady = accuracy > 0 && accuracy < 100
+                                    val isReady = currentLocation != null
+                                    val subtitleText = if (currentLocation != null) {
+                                        if (accuracy > 0) "Accurate to ${accuracy.toInt()}m • Tap to send"
+                                        else "Tap to send current location"
+                                    } else {
+                                        "Acquiring GPS location..."
+                                    }
                                     LocationActionItem(
                                         title = "Send your current location",
-                                        subtitle = if (isReady) "Tap to send pinpoint location" else "Waiting for accurate GPS fix...",
+                                        subtitle = subtitleText,
                                         icon = Icons.Default.MyLocation,
                                         iconBg = design.HeaderBg,
                                         iconTint = if (isReady) design.BrandGreen else design.TextSecondary,
                                         isHighlighted = isReady
                                     ) {
-                                        if (isReady) {
+                                        if (currentLocation != null) {
                                             val fix = currentLocation!!
                                             onSendLocation("${fix.latitude},${fix.longitude}|${fix.accuracy.toInt()}")
                                             onBack()
                                         } else {
-                                            Toast.makeText(context, "Waiting for high accuracy fix...", Toast.LENGTH_SHORT).show()
+                                            requestFreshLocation()
+                                            Toast.makeText(context, "Acquiring GPS fix...", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }

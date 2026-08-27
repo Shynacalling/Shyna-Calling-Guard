@@ -1184,7 +1184,7 @@ private fun RealSwipeAnswerBar(onDecline: () -> Unit, onAnswer: () -> Unit) {
                 .pointerInput(Unit) {
                     detectDragGestures(
                         onDragEnd = {
-                            val threshold = maxPx * 0.90f // Increased to 90% for professional stability
+                            val threshold = maxPx * 0.45f // Standard responsive threshold (45%) for easy swiping
                             when {
                                 offset > threshold -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onAnswer() }
                                 offset < -threshold -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onDecline() }

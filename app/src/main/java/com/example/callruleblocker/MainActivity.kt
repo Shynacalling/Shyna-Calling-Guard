@@ -86,10 +86,9 @@ class MainActivity : FragmentActivity() {
                     val primaryFeature by CallStateController.primaryFeature.collectAsState()
                     val globalState by CallStateController.globalState.collectAsState()
 
-                    // Back Button Rule during calling
-                    BackHandler(enabled = globalState != GlobalCallState.IDLE && globalState != GlobalCallState.ENDED) {
-                        // DO NOTHING - Prevent accidental exit or feature switch during active call
-                        Log.d("ShynaCall", "Back blocked during active call state: $globalState")
+                    // Back Button Rule during calling: Prevent accidental exit during an active conversation
+                    BackHandler(enabled = globalState == GlobalCallState.ACTIVE || globalState == GlobalCallState.CONNECTING) {
+                        Log.d("ShynaCall", "Back blocked during active session: $globalState")
                     }
 
                     when (currentScreen) {
@@ -125,11 +124,8 @@ class MainActivity : FragmentActivity() {
                         "SHYNA_LINK" -> {
                             SmartCommunicationScreen(
                                 onBack = { 
-                                    currentScreen = when(CallStateController.primaryFeature.value) {
-                                        MainCallType.PHONE_DIALER -> "PHONE_HOME"
-                                        MainCallType.SHYNA_LINK -> "SHYNA_LINK"
-                                        MainCallType.OFFLINE_CALL -> "OFFLINE_CALL"
-                                    }
+                                    CallStateController.setPrimaryFeature(MainCallType.PHONE_DIALER)
+                                    currentScreen = "PHONE_HOME"
                                 }
                             )
                         }
