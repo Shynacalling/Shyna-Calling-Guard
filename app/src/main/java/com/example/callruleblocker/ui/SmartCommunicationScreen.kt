@@ -1747,23 +1747,33 @@ private fun SmartChatDetailScreen(
 
     // Scroll to bottom logic
     // Auto-scroll to bottom handled by reverseLayout = true in LazyColumn
-    // LaunchedEffect(msgs.size) {
-    //    if (msgs.isNotEmpty()) {
-    //        listState.animateScrollToItem(msgs.size - 1)
-    //    }
-    // }
-
+    LaunchedEffect(msgs.size, text) {
+        if (msgs.isNotEmpty()) {
+            listState.animateScrollToItem(0)
+        }
+    }
 
     if (showRsvpFor != null) {
         val m = showRsvpFor!!
+        val attempts = m.interactionAttempts[userId] ?: 0
+        val firstTime = m.firstInteractionTime[userId] ?: m.lastInteractionTime[userId] ?: 0L
+        val now = System.currentTimeMillis()
+        val isTimeLocked = firstTime > 0L && (now - firstTime >= 30 * 60 * 1000L)
+        val isBlocked = attempts >= 5 || isTimeLocked
+
+        val remainingChances = (5 - attempts).coerceAtLeast(0)
+        val statusMsg = when {
+            attempts >= 5 -> "Maximum 5 attempts reached. RSVP is final."
+            isTimeLocked -> "RSVP locked (30 min time limit reached)."
+            else -> "Are you attending this event? ($remainingChances chances left)"
+        }
+
         AlertDialog(
             onDismissRequest = { showRsvpFor = null },
             title = { Text(m.eventTitle ?: "Event RSVP", fontWeight = FontWeight.Bold, color = ShynaDesign.colors.TextPrimary) },
             text = {
-                val attempts = m.interactionAttempts[userId] ?: 0
-                val isBlocked = attempts >= 2
                 Column {
-                    Text(if(isBlocked) "Maximum 2 attempts reached." else "Are you attending this event?", color = ShynaDesign.colors.TextSecondary)
+                    Text(statusMsg, color = ShynaDesign.colors.TextSecondary)
                     Spacer(Modifier.height(16.dp))
                     listOf("going", "maybe", "not_going").forEach { status ->
                         Button(
@@ -1771,10 +1781,10 @@ private fun SmartChatDetailScreen(
                             enabled = !isBlocked,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if(status == "going") ShynaDesign.colors.BrandGreen else ShynaDesign.colors.DividerColor
+                                containerColor = if(status == "going") ShynaDesign.colors.BrandGreen else ShynaDesign.colors.HeaderBg
                             )
                         ) {
-                            Text(status.uppercase())
+                            Text(status.replace("_", " ").uppercase())
                         }
                     }
                 }
@@ -2041,6 +2051,26 @@ private fun SmartChatDetailScreen(
         var showDatePicker by remember { mutableStateOf(false) }
         val datePickerState = rememberDatePickerState(initialSelectedDateMillis = eventDate)
 
+        val placesClient = remember { com.google.android.libraries.places.api.Places.createClient(mContext) }
+        var eventLocSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+
+        fun queryEventLocationSuggestions(q: String) {
+            if (q.isBlank() || q.length < 2) {
+                eventLocSuggestions = emptyList()
+                return
+            }
+            val req = com.google.android.libraries.places.api.net.FindAutocompletePredictionsRequest.builder()
+                .setQuery(q)
+                .build()
+            placesClient.findAutocompletePredictions(req).addOnSuccessListener { res ->
+                eventLocSuggestions = res.autocompletePredictions.take(5).map { 
+                    "${it.getPrimaryText(null)}, ${it.getSecondaryText(null)}" 
+                }
+            }.addOnFailureListener {
+                eventLocSuggestions = emptyList()
+            }
+        }
+
         if (showDatePicker) {
             DatePickerDialog(
                 onDismissRequest = { showDatePicker = false },
@@ -2081,11 +2111,42 @@ private fun SmartChatDetailScreen(
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = eventLoc,
-                        onValueChange = { eventLoc = it },
-                        label = { Text("Location") },
+                        onValueChange = { 
+                            eventLoc = it
+                            queryEventLocationSuggestions(it)
+                        },
+                        label = { Text("Location / District / State") },
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = ShynaDesign.colors.BrandGreen)
                     )
+                    if (eventLocSuggestions.isNotEmpty()) {
+                        Surface(
+                            color = ShynaDesign.colors.HeaderBg,
+                            shape = RoundedCornerShape(8.dp),
+                            shadowElevation = 4.dp,
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                        ) {
+                            Column {
+                                eventLocSuggestions.forEach { suggestion ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                eventLoc = suggestion
+                                                eventLocSuggestions = emptyList()
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.LocationOn, null, tint = ShynaDesign.colors.BrandGreen, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(suggestion, color = ShynaDesign.colors.TextPrimary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    HorizontalDivider(color = ShynaDesign.colors.DividerColor)
+                                }
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(16.dp))
                     val dateStr = remember(eventDate) { SimpleDateFormat("dd MMM, yyyy", Locale.getDefault()).format(Date(eventDate)) }
                     Surface(
